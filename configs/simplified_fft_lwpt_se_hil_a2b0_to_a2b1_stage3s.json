@@ -1,0 +1,742 @@
+{
+  "paths": {
+    "project_dir": ".",
+    "data_dir": "D:/Bigshe/RflyMAD_Dataset/process-spec-all",
+    "outputs_dir": "./outputs"
+  },
+  "cache": {
+    "enabled": true,
+    "cache_dir": "D:/Bigshe/TFL/UAV_muilt-scale/cache_npy_30ch",
+    "format": "npy",
+    "mmap": true
+  },
+  "source_domain": {
+    "A": [
+      2
+    ],
+    "B": [
+      0
+    ],
+    "use_faults": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ]
+  },
+  "target_domain": {
+    "A": [
+      2
+    ],
+    "B": [
+      1
+    ],
+    "use_faults": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ]
+  },
+  "seed": 42,
+  "dataset": {
+    "split_seed": 42,
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
+    "stratify_by_fault": true
+  },
+  "windows": {
+    "enable_stage_windowing": true,
+    "sample_rate_hz": 120,
+    "stage_window_seconds": 3.0,
+    "stage_stride_seconds": 1.0,
+    "normal_context_seconds": 3.0,
+    "drop_prefault_normal_windows_for_fault_missions": true,
+    "stage_label_policy": "pre_normal_to_class10_post_to_fault",
+    "window_lengths": [
+      60,
+      120,
+      240
+    ],
+    "train_windows_per_mission_per_scale": 3,
+    "eval_windows_per_scale": 4
+  },
+  "channels": [
+    {
+      "name": "accel_x",
+      "candidates": [
+        "_sensor_accel_0_x"
+      ]
+    },
+    {
+      "name": "accel_y",
+      "candidates": [
+        "_sensor_accel_0_y"
+      ]
+    },
+    {
+      "name": "accel_z",
+      "candidates": [
+        "_sensor_accel_0_z"
+      ]
+    },
+    {
+      "name": "gyro_x",
+      "candidates": [
+        "_sensor_gyro_0_x"
+      ]
+    },
+    {
+      "name": "gyro_y",
+      "candidates": [
+        "_sensor_gyro_0_y"
+      ]
+    },
+    {
+      "name": "gyro_z",
+      "candidates": [
+        "_sensor_gyro_0_z"
+      ]
+    },
+    {
+      "name": "mag_x",
+      "candidates": [
+        "_sensor_mag_0_x"
+      ]
+    },
+    {
+      "name": "mag_y",
+      "candidates": [
+        "_sensor_mag_0_y"
+      ]
+    },
+    {
+      "name": "mag_z",
+      "candidates": [
+        "_sensor_mag_0_z"
+      ]
+    },
+    {
+      "name": "pos_x",
+      "candidates": [
+        "_vehicle_local_position_0_x"
+      ]
+    },
+    {
+      "name": "pos_y",
+      "candidates": [
+        "_vehicle_local_position_0_y"
+      ]
+    },
+    {
+      "name": "pos_z",
+      "candidates": [
+        "_vehicle_local_position_0_z"
+      ]
+    },
+    {
+      "name": "vel_x",
+      "candidates": [
+        "_vehicle_local_position_0_vx"
+      ]
+    },
+    {
+      "name": "vel_y",
+      "candidates": [
+        "_vehicle_local_position_0_vy"
+      ]
+    },
+    {
+      "name": "vel_z",
+      "candidates": [
+        "_vehicle_local_position_0_vz"
+      ]
+    },
+    {
+      "name": "q0",
+      "candidates": [
+        "_vehicle_attitude_0_q[0]",
+        "_vehicle_attitude_0_q_0"
+      ]
+    },
+    {
+      "name": "q1",
+      "candidates": [
+        "_vehicle_attitude_0_q[1]",
+        "_vehicle_attitude_0_q_1"
+      ]
+    },
+    {
+      "name": "q2",
+      "candidates": [
+        "_vehicle_attitude_0_q[2]",
+        "_vehicle_attitude_0_q_2"
+      ]
+    },
+    {
+      "name": "q3",
+      "candidates": [
+        "_vehicle_attitude_0_q[3]",
+        "_vehicle_attitude_0_q_3"
+      ]
+    },
+    {
+      "name": "actuator_ctrl_0",
+      "candidates": [
+        "_actuator_controls_0_0_control[0]"
+      ]
+    },
+    {
+      "name": "actuator_ctrl_1",
+      "candidates": [
+        "_actuator_controls_0_0_control[1]"
+      ]
+    },
+    {
+      "name": "actuator_ctrl_2",
+      "candidates": [
+        "_actuator_controls_0_0_control[2]"
+      ]
+    },
+    {
+      "name": "actuator_ctrl_3",
+      "candidates": [
+        "_actuator_controls_0_0_control[3]"
+      ]
+    },
+    {
+      "name": "motor_rpm_1",
+      "candidates": [
+        "TrueState_data_motorRPMs[1]"
+      ]
+    },
+    {
+      "name": "motor_rpm_2",
+      "candidates": [
+        "TrueState_data_motorRPMs[2]"
+      ]
+    },
+    {
+      "name": "motor_rpm_3",
+      "candidates": [
+        "TrueState_data_motorRPMs[3]"
+      ]
+    },
+    {
+      "name": "motor_rpm_4",
+      "candidates": [
+        "TrueState_data_motorRPMs[4]"
+      ]
+    },
+    {
+      "name": "baro_alt",
+      "candidates": [
+        "_vehicle_air_data_0_baro_alt_meter"
+      ]
+    },
+    {
+      "name": "baro_temp",
+      "candidates": [
+        "_vehicle_air_data_0_baro_temp_celcius"
+      ]
+    },
+    {
+      "name": "baro_pressure",
+      "candidates": [
+        "_vehicle_air_data_0_baro_pressure_pa"
+      ]
+    }
+  ],
+  "cross_sensor_residuals": {
+    "enable": true,
+    "window_norm": true,
+    "norm_eps": 1e-06,
+    "mask_mode": "base_only",
+    "channels": [
+      {
+        "name": "imu_ekf_vel_res_x",
+        "type": "derived"
+      },
+      {
+        "name": "imu_ekf_vel_res_y",
+        "type": "derived"
+      },
+      {
+        "name": "imu_ekf_vel_res_z",
+        "type": "derived"
+      },
+      {
+        "name": "pos_vel_res_x",
+        "type": "derived"
+      },
+      {
+        "name": "pos_vel_res_y",
+        "type": "derived"
+      },
+      {
+        "name": "pos_vel_res_z",
+        "type": "derived"
+      },
+      {
+        "name": "accel_pos_res_x",
+        "type": "derived"
+      },
+      {
+        "name": "accel_pos_res_y",
+        "type": "derived"
+      },
+      {
+        "name": "accel_pos_res_z",
+        "type": "derived"
+      }
+    ]
+  },
+  "train": {
+    "device": "cuda",
+    "num_workers": 8,
+    "batch_size": 64,
+    "sampler_mode": "weighted",
+    "sampler_class_boost_map": {
+      "2": 1.5,
+      "4": 1.5,
+      "8": 1.5,
+      "9": 1.5
+    },
+    "normal_class_downsample_ratio": 0.8,
+    "pin_memory": true,
+    "persistent_workers": false,
+    "prefetch_factor": 4,
+    "use_amp": true,
+    "learning_rate": 0.004060571784688596,
+    "weight_decay": 0.0001,
+    "max_epochs": 100,
+    "early_stopping_patience": 5,
+    "grad_clip_norm": 1.0,
+    "scheduler": {
+      "type": "cosine_warm_restarts",
+      "T_0": 5,
+      "T_mult": 2,
+      "eta_min": 1e-06
+    },
+    "val_interval_epochs": 1,
+    "fail_on_nan": true
+  },
+  "fine_tune": {
+    "freeze_frontend": true,
+    "freeze_layers": 0,
+    "learning_rate": 0.0015577607917563608,
+    "weight_decay": 0.0001,
+    "max_epochs": 50,
+    "early_stopping_patience": 4,
+    "ft_early_stopping_warmup_epochs": 8,
+    "ft_early_stopping_metric": "macro_f1",
+    "checkpoint_top_k": 3,
+    "last_checkpoint_averaging": false,
+    "grad_clip_norm": 1.0,
+    "scheduler": {
+      "type": "cosine_warm_restarts",
+      "T_0": 3,
+      "T_mult": 2,
+      "eta_min": 1e-06
+    },
+    "val_interval_epochs": 1,
+    "fail_on_nan": true,
+    "augment_mode": "light",
+    "threshold_search": true,
+    "threshold_search_mode": "auto",
+    "threshold_search_max_accuracy_drop": 0.0,
+    "threshold_search_class10_constraint": "soft",
+    "threshold_search_require_non_decreasing_macro_f1": true,
+    "threshold_search_class10_overpredict_limit": 0.0,
+    "threshold_search_min_macro_recall_delta": -0.01,
+    "threshold_search_min_gmean_delta": -0.02,
+    "threshold_search_accuracy_tie_eps": 0.0015,
+    "threshold_search_bootstrap_rounds": 200,
+    "threshold_search_objective": "macro_f1_with_accuracy_floor",
+    "threshold_search_min_accuracy": 0.9,
+    "threshold_temperature": 1.0,
+    "adabn_enable": false,
+    "adabn_split": "val",
+    "adabn_max_batches": 0,
+    "threshold_search_nofault_bias": true,
+    "lr_backbone": 0.004,
+    "lr_head": 0.0004
+  },
+  "model": {
+    "num_classes": 11,
+    "tcn_num_levels": 5,
+    "tcn_channels": 96,
+    "tcn_kernel_size": 3,
+    "tcn_dropout": 0.24,
+    "use_lwpt_frontend": true,
+    "lwpt_num_bands": 11,
+    "lwpt_kernel_sizes": [
+      3,
+      5,
+      7,
+      9
+    ],
+    "lwpt_dropout": 0.24474360919811003,
+    "use_channel_se": true,
+    "channel_se_reduction": 16,
+    "use_mixed_pooling": false,
+    "freq_branch_channels": 96,
+    "freq_branch_kernel_size": 3,
+    "freq_branch_dropout": 0.24,
+    "use_freq_branch_se": true,
+    "freq_branch_se_reduction": 16,
+    "concat_health_mask_channels": true,
+    "use_sensor_group_attention": false,
+    "use_fused_amtc_tcn": false,
+    "use_deformable_tcn": true,
+    "deformable_conv_mode": "conv1_only",
+    "deformable_causal_mode": "strict",
+    "deform_offset_kernel_size": 3,
+    "deform_offset_l1_weight": 0.0001,
+    "use_hybrid_deform_multiscale_tcn": false,
+    "hybrid_tcn_kernel_sizes": [
+      3,
+      5,
+      7
+    ],
+    "use_levelwise_tcn_aggregation": false,
+    "use_uncertainty_temporal_pooling": false,
+    "use_tf2d_branch": false,
+    "tf2d_input_from_raw": true,
+    "tf2d_n_fft": [
+      32
+    ],
+    "tf2d_hop_lengths": [
+      8
+    ],
+    "tf2d_win_lengths": [
+      32
+    ],
+    "tf2d_log_scale": true,
+    "tf2d_branch_channels": 32,
+    "tf2d_pool_freq_bins": 8,
+    "tf2d_pool_time_bins": 16,
+    "use_layerwise_tf_fusion": false,
+    "tf_fusion_alpha_init": 0.0,
+    "tf_fusion_dropout": 0.1,
+    "use_global_branch_weighting": false,
+    "fft_mag_log1p": true,
+    "fft_mag_norm": "none"
+  },
+  "augment": {
+    "enable_augment": true,
+    "strategy": "physics_aware",
+    "disable_targeted_gan": true,
+    "gaussian_sigma": 0.01,
+    "enable_drift_noise": false,
+    "drift_sigma": 0.005,
+    "use_mixup": false,
+    "mixup_alpha": 0.2,
+    "correlated_jitter": {
+      "enable": true,
+      "prob": 0.7,
+      "shared_sigma": 0.015,
+      "ind_sigma": 0.03
+    },
+    "bias_injection": {
+      "enable": true,
+      "prob": 0.4,
+      "imu_ratio": 0.05,
+      "posvel_ratio": 0.02
+    },
+    "linear_drift": {
+      "enable": true,
+      "prob": 0.35,
+      "range": [
+        0.001,
+        0.01
+      ]
+    },
+    "gain_scaling": {
+      "enable": true,
+      "prob": 0.5,
+      "imu_range": [
+        0.97,
+        1.03
+      ],
+      "posvel_range": [
+        0.98,
+        1.02
+      ]
+    },
+    "freq_domain": {
+      "enable": false,
+      "time_mask": {
+        "enable": true,
+        "prob": 0.35,
+        "width_range": [
+          2,
+          6
+        ]
+      },
+      "freq_mask": {
+        "enable": true,
+        "prob": 0.35,
+        "width_range": [
+          1,
+          2
+        ]
+      },
+      "spectral_tilt": {
+        "enable": true,
+        "prob": 0.2,
+        "db_range": 1.5
+      }
+    },
+    "hard_class": {
+      "target_classes": [
+        5,
+        6,
+        7
+      ],
+      "min_prob": 0.8,
+      "sensor_fault": {
+        "bias_mult": 8.0,
+        "stuck_prob": 0.3,
+        "stuck_range": [
+          30,
+          100
+        ]
+      },
+      "mixup": {
+        "enable": true,
+        "prob": 0.35,
+        "alpha": 0.3
+      }
+    },
+    "class_targeted": {
+      "enable": true,
+      "focus_classes": [
+        2,
+        4,
+        8,
+        9
+      ],
+      "min_prob": 0.45,
+      "max_prob": 0.9
+    },
+    "confusion_pair": {
+      "enable": true,
+      "pairs": [
+        [
+          2,
+          4
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          8,
+          10
+        ],
+        [
+          9,
+          0
+        ],
+        [
+          10,
+          4
+        ],
+        [
+          10,
+          2
+        ]
+      ],
+      "pair_boost": 0.2
+    },
+    "boundary_jitter": {
+      "enable": true,
+      "near_onset_seconds": 1.5,
+      "augment_prob": 0.6,
+      "noise_sigma": 0.03
+    },
+    "feature_budget": {
+      "enable": true,
+      "protected_channels": [
+        "pos_x",
+        "pos_y",
+        "mag_x",
+        "mag_y",
+        "mag_z",
+        "gyro_z",
+        "accel_y",
+        "accel_z"
+      ],
+      "protected_sigma_scale": 0.6,
+      "unprotected_sigma_scale": 1.4
+    },
+    "sensor_dropout": {
+      "enable": false,
+      "prob": 0.15,
+      "group_drop_prob": 0.3,
+      "protected_groups": [
+        "accel"
+      ]
+    },
+    "class_mixup": {
+      "enable": true,
+      "target_classes": [
+        2,
+        4,
+        8,
+        9
+      ],
+      "prob": 0.25,
+      "alpha": 0.15,
+      "same_fault_family_only": true,
+      "max_bank_size_per_class": 128
+    },
+    "curriculum": {
+      "warmup_epochs": 8,
+      "full_aug_start_epoch": 8,
+      "decay_start_ratio": 0.85,
+      "decay_factor": 0.5
+    },
+    "targeted_gan": {
+      "enable": true,
+      "reference_eval_json": "outputs/20260207_134835/S6_stage_mask_lwpt_attnpool/eval/finetuned_model_target.json",
+      "manual_hard_classes": [],
+      "top_k": 5,
+      "exclude_classes": [
+        10
+      ],
+      "min_support": 30,
+      "max_windows_per_class": 512,
+      "apply_prob": 0.5478454224261835,
+      "blend_ratio_min": 0.5416175705653262,
+      "blend_ratio_max": 0.7886343846963968,
+      "latent_dim": 96,
+      "hidden_dim": 256,
+      "train_steps": 180,
+      "critic_steps": 3,
+      "batch_size": 64,
+      "lr_generator": 0.0002,
+      "lr_discriminator": 0.0004,
+      "gp_lambda": 10.0,
+      "spectral_lambda": 1.0,
+      "smooth_lambda": 0.02,
+      "synth_bank_size": 512,
+      "min_windows_per_class": 24,
+      "seed": 2026,
+      "device": "cuda",
+      "cache_enable": true,
+      "cache_dir": "outputs/gan_cache",
+      "cache_force_retrain": false
+    }
+  },
+  "imbalance": {
+    "class_weight_mode": "inverse_log",
+    "inverse_log_offset": 1.0,
+    "use_label_smoothing": false,
+    "label_smoothing": 0.1,
+    "use_focal_loss": false,
+    "focal_gamma": 2.0,
+    "use_adaptive_cost": true,
+    "use_optuna_cost_result": true,
+    "optuna_cost_result_filename": "optuna_cost_result.json",
+    "use_ldam_loss": false,
+    "ldam_max_m": 0.5,
+    "ldam_scale": 30.0,
+    "use_confusion_aware_loss": true,
+    "confusion_pairs": [
+      [
+        8,
+        10,
+        3.0
+      ],
+      [
+        8,
+        9,
+        2.5
+      ],
+      [
+        10,
+        8,
+        2.5
+      ],
+      [
+        9,
+        0,
+        2.0
+      ],
+      [
+        0,
+        9,
+        2.0
+      ]
+    ],
+    "lambda_confusion": 1.0,
+    "use_supcon_loss": true,
+    "supcon_temperature": 0.1,
+    "supcon_lambda": 0.3,
+    "use_center_loss": true,
+    "center_loss_lambda": 0.1,
+    "center_loss_lr": 0.5,
+    "center_loss_active_classes": [
+      0,
+      8,
+      9,
+      10
+    ],
+    "apply_optuna_best_hparams": false,
+    "loss_type": "auto"
+  },
+  "stats": {
+    "mode": "sampled",
+    "max_missions": 50,
+    "windows_per_mission_per_scale": 2
+  },
+  "logging": {
+    "print_interval_batches": 1,
+    "write_jsonl": true
+  },
+  "labels": {
+    "fault_to_class": {
+      "0": 0,
+      "1": 1,
+      "2": 2,
+      "3": 3,
+      "4": 4,
+      "5": 5,
+      "6": 6,
+      "7": 7,
+      "8": 8,
+      "9": 9,
+      "10": 10
+    },
+    "class_id_to_name": {
+      "0": "motor",
+      "1": "propeller",
+      "2": "low_voltage",
+      "3": "wind_affect",
+      "4": "load_lose",
+      "5": "accelerometer",
+      "6": "gyroscope",
+      "7": "magnetometer",
+      "8": "barometer",
+      "9": "GPS",
+      "10": "no_fault"
+    }
+  }
+}
