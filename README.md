@@ -1,6 +1,6 @@
 # 淬真 / Essence Forge
 
-从嘈杂的无人机遥测数据中提炼关键信号本质。
+基于rfymad数据集进行11分类故障诊断研究。
 
 `essence_forge` 现在已经整理成一个可独立运行的实验包。你可以把整个 `essence_forge/` 目录复制到另一台机器上，直接运行，而不再依赖仓库根目录下的 `uav_tl`、`tools` 或 `main.py`。
 
