@@ -1,4 +1,4 @@
-# 淬真 / Essence Forge
+# 基于rfymad数据集进行11分类故障诊断研究
 
 基于rfymad数据集进行11分类故障诊断研究。
 
