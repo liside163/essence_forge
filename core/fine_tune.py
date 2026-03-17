@@ -38,8 +38,11 @@ from essence_forge.core.train import (
     build_exp_a_criterion,
     build_sampler_for_train_dataset,
     build_train_criterion,
+    collect_deform_offset_parameters,
+    get_latest_deform_stats,
     resolve_loss_type,
     resolve_use_class_balance,
+    set_deform_offset_trainable,
 )
 from essence_forge.core.utils import (
     build_dataloader_runtime_kwargs,
@@ -300,22 +303,44 @@ def fine_tune_model(
         raise AttributeError("模型缺少 classifier，无法构建 head/backbone 分层学习率参数组")
     head_params = list(model.classifier.parameters())
     head_param_ids = {id(p) for p in head_params}
-    backbone_params = [p for p in model.parameters() if id(p) not in head_param_ids and p.requires_grad]
-    if len(head_params) == 0 or len(backbone_params) == 0:
+    deform_offset_params = collect_deform_offset_parameters(model)
+    deform_offset_param_ids = {id(param) for param in deform_offset_params}
+    backbone_params = [
+        p
+        for p in model.parameters()
+        if id(p) not in head_param_ids and id(p) not in deform_offset_param_ids and p.requires_grad
+    ]
+    if len(head_params) == 0 or (len(backbone_params) == 0 and len(deform_offset_params) == 0):
         raise ValueError("Layer-wise LR parameter groups are empty; please check model parameter grouping.")
+    deform_warmup_epochs = int(getattr(CFG, "deform_warmup_epochs", 0))
+    deform_offset_lr_scale = float(getattr(CFG, "deform_offset_lr_scale", 1.0))
+    if len(deform_offset_params) > 0 and deform_warmup_epochs > 0:
+        set_deform_offset_trainable(model, trainable=False)
 
+    optimizer_groups = [
+        {"params": backbone_params, "lr": lr_backbone, "name": "backbone"},
+        {"params": head_params, "lr": lr_head, "name": "head"},
+    ]
+    if len(deform_offset_params) > 0:
+        optimizer_groups.append(
+            {
+                "params": deform_offset_params,
+                "lr": lr_backbone * deform_offset_lr_scale,
+                "name": "deform_offset",
+            }
+        )
     optimizer = torch.optim.AdamW(
-        [
-            {"params": backbone_params, "lr": lr_backbone, "name": "backbone"},
-            {"params": head_params, "lr": lr_head, "name": "head"},
-        ],
+        optimizer_groups,
         weight_decay=float(getattr(CFG, 'ft_weight_decay', 0.0)),
     )
     print(
         f"[{model_name}] 微调策略 | lr_backbone={lr_backbone:.6g} lr_head={lr_head:.6g} "
+        f"lr_deform_offset={lr_backbone * deform_offset_lr_scale:.6g} "
         f"freeze_epochs={freeze_epochs} freeze_layers={freeze_layers} "
         f"freeze_frontend={freeze_frontend} "
-        f"initial_backbone_frozen={should_freeze_backbone}"
+        f"initial_backbone_frozen={should_freeze_backbone} "
+        f"deform_offset_params={len(deform_offset_params)} "
+        f"deform_warmup_epochs={deform_warmup_epochs}"
     )
     if freeze_full_training:
         print(f"[{model_name}] compatibility mode: freeze_layers>0 and freeze_epochs=0, backbone stays frozen.")
@@ -437,7 +462,12 @@ def fine_tune_model(
 
         if freeze_epochs > 0 and epoch == freeze_epochs and not freeze_full_training:
             model.freeze_feature_extractor(freeze=False)
+            if freeze_frontend and hasattr(model, "freeze_frontend"):
+                model.freeze_frontend(freeze=True)
             print(f"[{model_name}] epoch={epoch+1} unfreeze backbone and switch to full fine-tuning")
+        if len(deform_offset_params) > 0 and deform_warmup_epochs > 0 and epoch == deform_warmup_epochs:
+            set_deform_offset_trainable(model, trainable=True)
+            print(f"[{model_name}] epoch={epoch+1} unfreeze deform offset parameters")
 
         model.train()
         train_loss_sum = 0.0
@@ -628,6 +658,7 @@ def fine_tune_model(
                 epochs_no_improve += 1
 
         elapsed = time.perf_counter() - t_start
+        deform_stats = get_latest_deform_stats(model)
         if val_macro_f1 is None or val_gmean is None:
             print(
                 f"[{model_name}] epoch={epoch+1} train_loss={train_loss:.5f} "
@@ -656,6 +687,10 @@ def fine_tune_model(
                 "val_computed": bool(should_validate),
                 "lr_backbone": optimizer.param_groups[0]["lr"],
                 "lr_head": optimizer.param_groups[1]["lr"],
+                "lr_deform_offset": (
+                    optimizer.param_groups[2]["lr"] if len(optimizer.param_groups) > 2 else None
+                ),
+                **deform_stats,
                 "elapsed_s": round(elapsed, 2),
             }
         )
@@ -669,6 +704,7 @@ def fine_tune_model(
                 "monitor_metric": early_stopping_metric,
                 "monitor_score": monitor_score,
                 "val_computed": bool(should_validate),
+                **deform_stats,
             }
         )
 

@@ -20,7 +20,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from essence_forge.core.runtime_config import CFG
-from essence_forge.core.channel_layout import channel_names_from_specs
+from essence_forge.core.channel_layout import build_named_raw_groups, channel_names_from_specs
 from essence_forge.core.models.lwpt import LearnableWaveletPacketFrontend
 from essence_forge.core.models.masking import masked_max_pooling, masked_mean_pooling
 from essence_forge.core.models.sensor_group_attention import SensorGroupAttention
@@ -64,6 +64,7 @@ class SimplifiedFftLwptSeTCN(nn.Module):
         use_channel_se: bool | None = None,
         channel_se_reduction: int | None = None,
         use_mixed_pooling: bool | None = None,
+        use_freq_branch: bool | None = None,
         freq_branch_channels: int | None = None,
         freq_branch_kernel_size: int | None = None,
         freq_branch_dropout: float | None = None,
@@ -78,6 +79,18 @@ class SimplifiedFftLwptSeTCN(nn.Module):
         deformable_causal_mode: str | None = None,
         deform_offset_kernel_size: int | None = None,
         deform_offset_l1_weight: float | None = None,
+        deform_apply_levels: tuple[int, ...] | list[int] | None = None,
+        deform_scope: str | None = None,
+        deform_group_mode: str | None = None,
+        deform_groups: tuple[str, ...] | list[str] | None = None,
+        deform_max_offset_scale: float | None = None,
+        deform_zero_init: bool | None = None,
+        deform_warmup_epochs: int | None = None,
+        deform_offset_lr_scale: float | None = None,
+        deform_offset_tv_weight: float | None = None,
+        deform_bypass_health_mask: bool | None = None,
+        use_deform_conv_gate: bool | None = None,
+        deform_conv_gate_bias_init: float | None = None,
         use_hybrid_deform_multiscale_tcn: bool | None = None,
         hybrid_tcn_kernel_sizes: tuple[int, ...] | list[int] | None = None,
         use_levelwise_tcn_aggregation: bool | None = None,
@@ -147,6 +160,11 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             if use_mixed_pooling is not None
             else bool(getattr(CFG, "use_mixed_pooling", True))
         )
+        self.use_freq_branch = (
+            bool(use_freq_branch)
+            if use_freq_branch is not None
+            else bool(getattr(CFG, "use_freq_branch", True))
+        )
         self.freq_branch_channels = (
             int(freq_branch_channels)
             if freq_branch_channels is not None
@@ -167,6 +185,8 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             if use_freq_branch_se is not None
             else bool(getattr(CFG, "use_freq_branch_se", self.use_channel_se))
         )
+        if not self.use_freq_branch:
+            self.use_freq_branch_se = False
         self.freq_branch_se_reduction = (
             int(freq_branch_se_reduction)
             if freq_branch_se_reduction is not None
@@ -212,6 +232,66 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             if deform_offset_l1_weight is not None
             else float(getattr(CFG, "deform_offset_l1_weight", 1e-4))
         )
+        self.deform_apply_levels = (
+            tuple(int(level) for level in deform_apply_levels)
+            if deform_apply_levels is not None
+            else tuple(int(level) for level in getattr(CFG, "deform_apply_levels", ()))
+        )
+        self.deform_scope = (
+            str(deform_scope).strip().lower()
+            if deform_scope is not None
+            else str(getattr(CFG, "deform_scope", "all_inputs")).strip().lower()
+        )
+        self.deform_group_mode = (
+            str(deform_group_mode).strip().lower()
+            if deform_group_mode is not None
+            else str(getattr(CFG, "deform_group_mode", "per_channel")).strip().lower()
+        )
+        self.deform_groups = (
+            tuple(str(name).strip() for name in deform_groups)
+            if deform_groups is not None
+            else tuple(str(name).strip() for name in getattr(CFG, "deform_groups", ()))
+        )
+        self.deform_max_offset_scale = (
+            float(deform_max_offset_scale)
+            if deform_max_offset_scale is not None
+            else float(getattr(CFG, "deform_max_offset_scale", 0.0))
+        )
+        self.deform_zero_init = (
+            bool(deform_zero_init)
+            if deform_zero_init is not None
+            else bool(getattr(CFG, "deform_zero_init", False))
+        )
+        self.deform_warmup_epochs = (
+            int(deform_warmup_epochs)
+            if deform_warmup_epochs is not None
+            else int(getattr(CFG, "deform_warmup_epochs", 0))
+        )
+        self.deform_offset_lr_scale = (
+            float(deform_offset_lr_scale)
+            if deform_offset_lr_scale is not None
+            else float(getattr(CFG, "deform_offset_lr_scale", 1.0))
+        )
+        self.deform_offset_tv_weight = (
+            float(deform_offset_tv_weight)
+            if deform_offset_tv_weight is not None
+            else float(getattr(CFG, "deform_offset_tv_weight", 0.0))
+        )
+        self.deform_bypass_health_mask = (
+            bool(deform_bypass_health_mask)
+            if deform_bypass_health_mask is not None
+            else bool(getattr(CFG, "deform_bypass_health_mask", False))
+        )
+        self.use_deform_conv_gate = (
+            bool(use_deform_conv_gate)
+            if use_deform_conv_gate is not None
+            else bool(getattr(CFG, "use_deform_conv_gate", False))
+        )
+        self.deform_conv_gate_bias_init = (
+            float(deform_conv_gate_bias_init)
+            if deform_conv_gate_bias_init is not None
+            else float(getattr(CFG, "deform_conv_gate_bias_init", -2.0))
+        )
         self.use_hybrid_deform_multiscale_tcn = (
             bool(use_hybrid_deform_multiscale_tcn)
             if use_hybrid_deform_multiscale_tcn is not None
@@ -239,19 +319,21 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             raise ValueError("tcn_channels 必须 > 0")
         if self.tcn_num_levels <= 0:
             raise ValueError("tcn_num_levels 必须 > 0")
-        if self.freq_branch_channels <= 0:
+        if self.use_freq_branch and self.freq_branch_channels <= 0:
             raise ValueError("freq_branch_channels 必须 > 0")
         if self.tcn_kernel_size <= 1 or self.tcn_kernel_size % 2 == 0:
             raise ValueError("tcn_kernel_size 必须是大于1的奇数")
-        if self.freq_branch_kernel_size <= 1 or self.freq_branch_kernel_size % 2 == 0:
+        if self.use_freq_branch and (
+            self.freq_branch_kernel_size <= 1 or self.freq_branch_kernel_size % 2 == 0
+        ):
             raise ValueError("freq_branch_kernel_size 必须是大于1的奇数")
         if not (0.0 <= self.tcn_dropout < 1.0):
             raise ValueError("tcn_dropout 必须在 [0,1) 范围")
-        if not (0.0 <= self.freq_branch_dropout < 1.0):
+        if self.use_freq_branch and not (0.0 <= self.freq_branch_dropout < 1.0):
             raise ValueError("freq_branch_dropout 必须在 [0,1) 范围")
         if self.use_channel_se and self.channel_se_reduction <= 0:
             raise ValueError("channel_se_reduction 必须 > 0")
-        if self.use_freq_branch_se and self.freq_branch_se_reduction <= 0:
+        if self.use_freq_branch and self.use_freq_branch_se and self.freq_branch_se_reduction <= 0:
             raise ValueError("freq_branch_se_reduction 必须 > 0")
         if self.use_sensor_group_attention and self.input_dim < self.raw_sensor_input_dim:
             raise ValueError(
@@ -268,12 +350,75 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             raise ValueError("deform_offset_kernel_size 必须是大于1的奇数")
         if self.deform_offset_l1_weight < 0.0:
             raise ValueError("deform_offset_l1_weight 必须 >= 0")
+        if self.deform_scope not in {"all_inputs", "raw_only"}:
+            raise ValueError("deform_scope 必须是 all_inputs 或 raw_only")
+        if self.deform_group_mode not in {"per_channel", "shared_by_group"}:
+            raise ValueError("deform_group_mode 必须是 per_channel 或 shared_by_group")
+        if self.deform_max_offset_scale < 0.0:
+            raise ValueError("deform_max_offset_scale 必须 >= 0")
+        if self.deform_warmup_epochs < 0:
+            raise ValueError("deform_warmup_epochs 必须 >= 0")
+        if self.deform_offset_lr_scale <= 0.0:
+            raise ValueError("deform_offset_lr_scale 必须 > 0")
+        if self.deform_offset_tv_weight < 0.0:
+            raise ValueError("deform_offset_tv_weight 必须 >= 0")
         self.hybrid_tcn_kernel_sizes = _to_kernel_tuple(
             self.hybrid_tcn_kernel_sizes,
             "hybrid_tcn_kernel_sizes",
         )
         if self.use_hybrid_deform_multiscale_tcn and not self.use_deformable_tcn:
             raise ValueError("use_hybrid_deform_multiscale_tcn 开启时 use_deformable_tcn 必须为 True")
+
+        if len(self.deform_apply_levels) == 0:
+            self.deform_apply_levels = (
+                tuple(range(self.tcn_num_levels)) if self.use_deformable_tcn else tuple()
+            )
+        else:
+            self.deform_apply_levels = tuple(sorted(set(int(level) for level in self.deform_apply_levels)))
+        if any(level < 0 or level >= self.tcn_num_levels for level in self.deform_apply_levels):
+            raise ValueError("deform_apply_levels 含越界层索引")
+        if self.deform_group_mode == "shared_by_group" and len(self.deform_groups) == 0:
+            raise ValueError("shared_by_group 模式下 deform_groups 不能为空")
+
+        self.health_mask_branch_enabled = bool(
+            self.deform_bypass_health_mask and self.health_mask_input_dim > 0
+        )
+        self.health_mask_start = self.raw_sensor_input_dim
+        if self.deform_scope == "raw_only":
+            self.feature_branch_input_dim = self.base_raw_input_dim
+            self.feature_branch_channel_names = self.base_raw_channel_names
+        elif self.health_mask_branch_enabled:
+            self.feature_branch_input_dim = self.raw_sensor_input_dim
+            self.feature_branch_channel_names = self.raw_sensor_channel_names
+        else:
+            self.feature_branch_input_dim = self.input_dim
+            health_names = tuple(f"{name}_mask" for name in self.base_raw_channel_names)
+            self.feature_branch_channel_names = (
+                self.raw_sensor_channel_names + health_names
+                if self.input_dim > self.raw_sensor_input_dim
+                else self.raw_sensor_channel_names
+            )
+        if (
+            not self.health_mask_branch_enabled
+            and self.input_dim > self.feature_branch_input_dim
+            and self.deform_scope == "raw_only"
+        ):
+            # raw_only 语义要求额外辅助通道旁路，而不是继续进入主特征分支。
+            raise ValueError(
+                "deform_scope=raw_only 且存在额外辅助通道时，必须启用 deform_bypass_health_mask"
+            )
+
+        self.deform_channel_groups: tuple[tuple[int, ...], ...] | None = None
+        if self.deform_group_mode == "shared_by_group":
+            self.deform_channel_groups = build_named_raw_groups(
+                self.feature_branch_channel_names,
+                self.deform_groups,
+            )
+            flat_count = sum(len(group) for group in self.deform_channel_groups)
+            if flat_count != self.feature_branch_input_dim:
+                raise ValueError(
+                    "shared_by_group 模式下 deform_groups 必须完整覆盖特征分支输入通道"
+                )
 
         if self.use_lwpt_frontend:
             if self.lwpt_num_bands < 1:
@@ -282,7 +427,7 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             if not (0.0 <= self.lwpt_dropout < 1.0):
                 raise ValueError("lwpt_dropout 必须在 [0,1) 范围")
             self.lwpt_frontend = LearnableWaveletPacketFrontend(
-                in_channels=self.input_dim,
+                in_channels=self.feature_branch_input_dim,
                 num_bands=self.lwpt_num_bands,
                 kernel_sizes=self.lwpt_kernel_sizes,
                 dropout=self.lwpt_dropout,
@@ -291,10 +436,10 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             self.lwpt_frontend = nn.Identity()
         self.sensor_group_attention = (
             SensorGroupAttention(
-                in_channels=self.raw_sensor_input_dim,
+                in_channels=self.feature_branch_input_dim,
                 channel_names=(
-                    self.raw_sensor_channel_names
-                    if len(self.raw_sensor_channel_names) == self.raw_sensor_input_dim
+                    self.feature_branch_channel_names
+                    if len(self.feature_branch_channel_names) == self.feature_branch_input_dim
                     else None
                 ),
             )
@@ -302,14 +447,15 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             else None
         )
 
-        self.time_input_channels = self.input_dim
-        self.freq_input_channels = self.input_dim
+        self.time_input_channels = self.feature_branch_input_dim
+        self.freq_input_channels = self.feature_branch_input_dim if self.use_freq_branch else 0
         # 保留该字段用于历史日志/兼容逻辑，不再作为主干输入通道。
-        self.fused_input_channels = self.input_dim * 2
+        self.fused_input_channels = self.feature_branch_input_dim * 2
 
         layers: List[TemporalBlock] = []
         in_ch = self.time_input_channels
         for level in range(self.tcn_num_levels):
+            use_deform_in_level = self.use_deformable_tcn and level in self.deform_apply_levels
             layers.append(
                 TemporalBlock(
                     in_channels=in_ch,
@@ -320,10 +466,16 @@ class SimplifiedFftLwptSeTCN(nn.Module):
                     use_channel_se=self.use_channel_se,
                     channel_se_reduction=self.channel_se_reduction,
                     use_multi_scale_conv=False,
-                    use_deformable_conv=self.use_deformable_tcn,
+                    use_deformable_conv=use_deform_in_level,
                     deformable_conv_mode=self.deformable_conv_mode,
                     deformable_causal_mode=self.deformable_causal_mode,
                     deform_offset_kernel_size=self.deform_offset_kernel_size,
+                    deform_group_mode=self.deform_group_mode,
+                    deform_channel_groups=(self.deform_channel_groups if level == 0 else None),
+                    deform_max_offset_scale=self.deform_max_offset_scale,
+                    deform_zero_init=self.deform_zero_init,
+                    use_deform_conv_gate=self.use_deform_conv_gate,
+                    deform_conv_gate_bias_init=self.deform_conv_gate_bias_init,
                     use_hybrid_deform_multiscale=self.use_hybrid_deform_multiscale_tcn,
                     hybrid_kernel_sizes=self.hybrid_tcn_kernel_sizes,
                     hybrid_use_pool_branch=True,
@@ -348,39 +500,65 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             else None
         )
 
-        freq_pad = (self.freq_branch_kernel_size - 1) // 2
-        self.freq_projection = nn.Sequential(
-            nn.Conv1d(
-                in_channels=self.freq_input_channels,
-                out_channels=self.freq_branch_channels,
-                kernel_size=self.freq_branch_kernel_size,
-                padding=freq_pad,
-                bias=False,
-            ),
-            nn.BatchNorm1d(self.freq_branch_channels),
-            nn.ReLU(inplace=True),
-            nn.Dropout(self.freq_branch_dropout),
-            nn.Conv1d(
-                in_channels=self.freq_branch_channels,
-                out_channels=self.freq_branch_channels,
-                kernel_size=1,
-                bias=False,
-            ),
-            nn.BatchNorm1d(self.freq_branch_channels),
-            nn.ReLU(inplace=True),
-        )
-        self.freq_channel_se = (
-            ChannelSE1D(
-                channels=self.freq_branch_channels,
-                reduction=self.freq_branch_se_reduction,
+        if self.use_freq_branch:
+            freq_pad = (self.freq_branch_kernel_size - 1) // 2
+            self.freq_projection = nn.Sequential(
+                nn.Conv1d(
+                    in_channels=self.freq_input_channels,
+                    out_channels=self.freq_branch_channels,
+                    kernel_size=self.freq_branch_kernel_size,
+                    padding=freq_pad,
+                    bias=False,
+                ),
+                nn.BatchNorm1d(self.freq_branch_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout(self.freq_branch_dropout),
+                nn.Conv1d(
+                    in_channels=self.freq_branch_channels,
+                    out_channels=self.freq_branch_channels,
+                    kernel_size=1,
+                    bias=False,
+                ),
+                nn.BatchNorm1d(self.freq_branch_channels),
+                nn.ReLU(inplace=True),
             )
-            if self.use_freq_branch_se
-            else None
-        )
+            self.freq_channel_se = (
+                ChannelSE1D(
+                    channels=self.freq_branch_channels,
+                    reduction=self.freq_branch_se_reduction,
+                )
+                if self.use_freq_branch_se
+                else None
+            )
+        else:
+            self.freq_projection = None
+            self.freq_channel_se = None
         pool_dim_factor = 2 if self.use_mixed_pooling else 1
         self.time_pooled_channels = self.tcn_channels * pool_dim_factor
-        self.freq_pooled_channels = self.freq_branch_channels * pool_dim_factor
+        self.freq_pooled_channels = (
+            self.freq_branch_channels * pool_dim_factor if self.use_freq_branch else 0
+        )
         self.late_fusion_channels = self.time_pooled_channels + self.freq_pooled_channels
+        self.health_mask_projection = (
+            nn.Conv1d(
+                in_channels=self.health_mask_input_dim,
+                out_channels=self.late_fusion_channels,
+                kernel_size=1,
+                bias=True,
+            )
+            if self.health_mask_branch_enabled
+            else None
+        )
+        self.health_mask_gate = (
+            nn.Linear(self.late_fusion_channels * 2, self.late_fusion_channels)
+            if self.health_mask_branch_enabled
+            else None
+        )
+        self.health_mask_bias = (
+            nn.Linear(self.late_fusion_channels, self.late_fusion_channels)
+            if self.health_mask_branch_enabled
+            else None
+        )
         self.late_fusion_proj = nn.Sequential(
             nn.Linear(self.late_fusion_channels, self.tcn_channels),
             nn.ReLU(inplace=True),
@@ -388,6 +566,8 @@ class SimplifiedFftLwptSeTCN(nn.Module):
         )
         self.classifier = nn.Linear(self.tcn_channels, self.num_classes)
         self._latest_deform_offset_l1: torch.Tensor | None = None
+        self._latest_deform_offset_tv: torch.Tensor | None = None
+        self._latest_deform_offset_saturation_ratio: torch.Tensor | None = None
 
     def _build_fft_magnitude(self, raw_input: torch.Tensor) -> torch.Tensor:
         fft_in = raw_input.float()
@@ -416,6 +596,8 @@ class SimplifiedFftLwptSeTCN(nn.Module):
         deform_offset_stds: List[torch.Tensor] = []
         deform_offset_max_abs: List[torch.Tensor] = []
         deform_offset_l1 = y.new_zeros(())
+        deform_offset_tv = y.new_zeros(())
+        deform_offset_saturation: List[torch.Tensor] = []
         for block in self.network:
             if collect_aux:
                 block_out = block(y, return_aux=True)
@@ -427,11 +609,14 @@ class SimplifiedFftLwptSeTCN(nn.Module):
                     deform_offset_means.append(block_aux["deform_offset_mean"])
                     deform_offset_stds.append(block_aux["deform_offset_std"])
                     deform_offset_max_abs.append(block_aux["deform_offset_max_abs"])
+                if "deform_offset_saturation_ratio" in block_aux:
+                    deform_offset_saturation.append(block_aux["deform_offset_saturation_ratio"])
                 if "hybrid_gate_mean" in block_aux:
                     hybrid_gate_means.append(block_aux["hybrid_gate_mean"])
             else:
                 y = block(y)
             deform_offset_l1 = deform_offset_l1 + block.get_deform_offset_l1()
+            deform_offset_tv = deform_offset_tv + block.get_deform_offset_tv()
             level_outputs.append(y)
 
         level_tokens = [feat.transpose(1, 2) for feat in level_outputs]
@@ -452,6 +637,12 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             y = fused
 
         self._latest_deform_offset_l1 = deform_offset_l1
+        self._latest_deform_offset_tv = deform_offset_tv
+        self._latest_deform_offset_saturation_ratio = (
+            torch.stack(deform_offset_saturation, dim=0).mean()
+            if len(deform_offset_saturation) > 0
+            else y.new_zeros(())
+        )
 
         aux: Dict[str, object] = {}
         if collect_aux:
@@ -487,13 +678,26 @@ class SimplifiedFftLwptSeTCN(nn.Module):
                 aux["deform_offset_l1_weighted"] = float(
                     (deform_offset_l1 * self.deform_offset_l1_weight).detach().item()
                 )
+                aux["deform_offset_tv"] = float(deform_offset_tv.detach().item())
+                aux["deform_offset_tv_weighted"] = float(
+                    (deform_offset_tv * self.deform_offset_tv_weight).detach().item()
+                )
+                aux["deform_offset_saturation_ratio"] = float(
+                    self._latest_deform_offset_saturation_ratio.detach().item()
+                )
         return y, aux
 
     def _forward_freq_branch(
         self,
-        fft_mag: torch.Tensor,
+        fft_mag: torch.Tensor | None,
         collect_aux: bool,
-    ) -> tuple[torch.Tensor, Dict[str, object]]:
+    ) -> tuple[torch.Tensor | None, Dict[str, object]]:
+        if not self.use_freq_branch or self.freq_projection is None or fft_mag is None:
+            aux: Dict[str, object] = {}
+            if collect_aux:
+                aux["freq_channel_attn_weights_summary"] = None
+            return None, aux
+
         y_freq = self.freq_projection(fft_mag)
         freq_attn_weights = None
         if self.freq_channel_se is not None:
@@ -561,18 +765,18 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             raise ValueError(f"lengths 与 batch 不匹配: lengths={lengths.shape[0]} batch={x.shape[0]}")
 
         raw_input = x.transpose(1, 2)  # [B, C, T]
+        feature_input = raw_input[:, : self.feature_branch_input_dim, :]
+        health_mask = None
+        if self.health_mask_branch_enabled:
+            health_mask = raw_input[
+                :,
+                self.health_mask_start : self.health_mask_start + self.health_mask_input_dim,
+                :,
+            ]
         if self.sensor_group_attention is not None:
-            raw_part = raw_input[:, : self.raw_sensor_input_dim, :]
-            enhanced_raw = self.sensor_group_attention(raw_part)
-            if self.input_dim > self.raw_sensor_input_dim:
-                raw_input = torch.cat(
-                    [enhanced_raw, raw_input[:, self.raw_sensor_input_dim :, :]],
-                    dim=1,
-                )
-            else:
-                raw_input = enhanced_raw
-        time_feat = self.lwpt_frontend(raw_input)  # [B, C, T]
-        fft_mag = self._build_fft_magnitude(raw_input)  # [B, C, T]
+            feature_input = self.sensor_group_attention(feature_input)
+        time_feat = self.lwpt_frontend(feature_input)  # [B, C, T]
+        fft_mag = self._build_fft_magnitude(feature_input) if self.use_freq_branch else None
         y_time, tcn_aux = self._forward_tcn_blocks(
             x_in=time_feat,
             lengths=lengths,
@@ -584,7 +788,7 @@ class SimplifiedFftLwptSeTCN(nn.Module):
         )
 
         time_tokens = y_time.transpose(1, 2)  # [B, T, C_tcn]
-        freq_tokens = y_freq.transpose(1, 2)  # [B, T, C_freq]
+        freq_tokens = y_freq.transpose(1, 2) if y_freq is not None else None
         uncertainty_gate_mean: torch.Tensor | None = None
         if self.use_uncertainty_temporal_pooling:
             pooled_time, uncertainty_gate_mean = self._pool_time_tokens_with_uncertainty(
@@ -593,19 +797,42 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             )
         else:
             pooled_time = self._pool_branch_tokens(time_tokens, lengths=lengths)
-        pooled_freq = self._pool_branch_tokens(freq_tokens, lengths=lengths)
-        late_fused = torch.cat([pooled_time, pooled_freq], dim=1)  # [B, C_tcn + C_freq]
+        pooled_freq = (
+            self._pool_branch_tokens(freq_tokens, lengths=lengths)
+            if freq_tokens is not None
+            else None
+        )
+        late_fused = (
+            torch.cat([pooled_time, pooled_freq], dim=1)
+            if pooled_freq is not None
+            else pooled_time
+        )
+        health_mask_gate_mean: torch.Tensor | None = None
+        mask_pooled: torch.Tensor | None = None
+        if health_mask is not None:
+            if self.health_mask_projection is None or self.health_mask_gate is None or self.health_mask_bias is None:
+                raise RuntimeError("health_mask bypass branch 未初始化")
+            mask_tokens = self.health_mask_projection(health_mask).transpose(1, 2)
+            mask_pooled = self._pool_branch_tokens(mask_tokens, lengths=lengths)
+            gate = torch.sigmoid(self.health_mask_gate(torch.cat([late_fused, mask_pooled], dim=1)))
+            bias = self.health_mask_bias(mask_pooled)
+            late_fused = late_fused + gate * mask_pooled + bias
+            health_mask_gate_mean = gate.mean().detach()
         pooled = self.late_fusion_proj(late_fused)  # [B, C_tcn]
 
         aux: Dict[str, object] = {}
         if collect_aux:
             aux.update(tcn_aux)
             aux.update(freq_aux)
-            aux["fft_shape"] = tuple(fft_mag.shape)
+            aux["health_mask_bypass_enabled"] = self.health_mask_branch_enabled
+            aux["feature_branch_input_shape"] = tuple(feature_input.shape)
+            aux["health_mask_shape"] = tuple(health_mask.shape) if health_mask is not None else None
+            aux["fft_shape"] = tuple(fft_mag.shape) if fft_mag is not None else None
             aux["time_stream_shape"] = tuple(y_time.shape)
-            aux["freq_stream_shape"] = tuple(y_freq.shape)
+            aux["freq_stream_shape"] = tuple(y_freq.shape) if y_freq is not None else None
             aux["time_pooled_shape"] = tuple(pooled_time.shape)
-            aux["freq_pooled_shape"] = tuple(pooled_freq.shape)
+            aux["freq_pooled_shape"] = tuple(pooled_freq.shape) if pooled_freq is not None else None
+            aux["health_mask_pooled_shape"] = tuple(mask_pooled.shape) if mask_pooled is not None else None
             aux["late_fusion_shape"] = tuple(late_fused.shape)
             aux["use_mixed_pooling"] = self.use_mixed_pooling
             # 保留该字段，兼容历史分析脚本读取。
@@ -620,6 +847,9 @@ class SimplifiedFftLwptSeTCN(nn.Module):
                 float(uncertainty_gate_mean.detach().item())
                 if uncertainty_gate_mean is not None
                 else None
+            )
+            aux["health_mask_gate_mean"] = (
+                float(health_mask_gate_mean.item()) if health_mask_gate_mean is not None else None
             )
         return pooled, aux
 
@@ -671,9 +901,10 @@ class SimplifiedFftLwptSeTCN(nn.Module):
         modules: List[nn.Module] = [
             self.lwpt_frontend,
             self.network,
-            self.freq_projection,
             self.late_fusion_proj,
         ]
+        if self.freq_projection is not None:
+            modules.append(self.freq_projection)
         if self.sensor_group_attention is not None:
             modules.append(self.sensor_group_attention)
         if self.levelwise_score is not None:
@@ -682,6 +913,12 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             modules.append(self.uncertainty_gate)
         if self.freq_channel_se is not None:
             modules.append(self.freq_channel_se)
+        if self.health_mask_projection is not None:
+            modules.append(self.health_mask_projection)
+        if self.health_mask_gate is not None:
+            modules.append(self.health_mask_gate)
+        if self.health_mask_bias is not None:
+            modules.append(self.health_mask_bias)
         for module in modules:
             for param in module.parameters():
                 param.requires_grad = not freeze
@@ -695,8 +932,9 @@ class SimplifiedFftLwptSeTCN(nn.Module):
         """
         modules: List[nn.Module] = [
             self.lwpt_frontend,
-            self.freq_projection,
         ]
+        if self.freq_projection is not None:
+            modules.append(self.freq_projection)
         if self.sensor_group_attention is not None:
             modules.append(self.sensor_group_attention)
         if self.freq_channel_se is not None:
@@ -707,16 +945,59 @@ class SimplifiedFftLwptSeTCN(nn.Module):
                 param.requires_grad = not freeze
                 frozen_count += 1
         if freeze:
-            print(f"[freeze_frontend] frozen {frozen_count} parameters in lwpt_frontend + freq_projection")
+            print(f"[freeze_frontend] frozen {frozen_count} parameters in frontend modules")
 
     def get_additional_regularization_loss(self) -> torch.Tensor:
-        if not self.use_deformable_tcn or self.deform_offset_l1_weight <= 0.0:
+        if not self.use_deformable_tcn:
             return self.classifier.weight.new_zeros(())
         if self._latest_deform_offset_l1 is None:
             return self.classifier.weight.new_zeros(())
         if not torch.isfinite(self._latest_deform_offset_l1):
             return self.classifier.weight.new_zeros(())
-        return self._latest_deform_offset_l1 * self.deform_offset_l1_weight
+        reg = self.classifier.weight.new_zeros(())
+        if self.deform_offset_l1_weight > 0.0:
+            reg = reg + self._latest_deform_offset_l1 * self.deform_offset_l1_weight
+        if (
+            self._latest_deform_offset_tv is not None
+            and torch.isfinite(self._latest_deform_offset_tv)
+            and self.deform_offset_tv_weight > 0.0
+        ):
+            reg = reg + self._latest_deform_offset_tv * self.deform_offset_tv_weight
+        return reg
+
+    def get_latest_deform_stats(self) -> Dict[str, float]:
+        stats = {
+            "deform_offset_l1": 0.0,
+            "deform_offset_tv": 0.0,
+            "deform_offset_saturation_ratio": 0.0,
+        }
+        if self._latest_deform_offset_l1 is not None and torch.isfinite(self._latest_deform_offset_l1):
+            stats["deform_offset_l1"] = float(self._latest_deform_offset_l1.detach().item())
+        if self._latest_deform_offset_tv is not None and torch.isfinite(self._latest_deform_offset_tv):
+            stats["deform_offset_tv"] = float(self._latest_deform_offset_tv.detach().item())
+        if (
+            self._latest_deform_offset_saturation_ratio is not None
+            and torch.isfinite(self._latest_deform_offset_saturation_ratio)
+        ):
+            stats["deform_offset_saturation_ratio"] = float(
+                self._latest_deform_offset_saturation_ratio.detach().item()
+            )
+        return stats
+
+    def get_deform_offset_parameters(self) -> List[nn.Parameter]:
+        params: List[nn.Parameter] = []
+        seen: set[int] = set()
+        for block in self.network:
+            for param in block.iter_deform_offset_parameters():
+                if id(param) in seen:
+                    continue
+                params.append(param)
+                seen.add(id(param))
+        return params
+
+    def set_deform_offset_trainable(self, trainable: bool) -> None:
+        for param in self.get_deform_offset_parameters():
+            param.requires_grad = bool(trainable)
 
     def get_features(
         self,

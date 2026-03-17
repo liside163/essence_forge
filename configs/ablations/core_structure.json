@@ -1,0 +1,177 @@
+{
+  "suite": "core_structure",
+  "description": "Selective grouped deformable temporal alignment ablations for Essence Forge TCN.",
+  "base_config": "configs/simplified_fft_lwpt_se_hil_a2b0_to_a2b1_stage3s.json",
+  "experiments": [
+    {
+      "id": "baseline",
+      "description": "E0 strong baseline: raw 30ch + health-mask bypass, no residuals, no deformable TCN.",
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": false,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "per_channel",
+          "deform_apply_levels": []
+        }
+      }
+    },
+    {
+      "id": "legacy_deform_e1",
+      "description": "E1 legacy deformable TCN on the strong-baseline input setting.",
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "all_inputs",
+          "deform_bypass_health_mask": false,
+          "deform_group_mode": "per_channel",
+          "deform_apply_levels": [],
+          "deform_max_offset_scale": 0.0,
+          "deform_zero_init": false,
+          "deform_offset_l1_weight": 0.0001,
+          "deform_offset_tv_weight": 0.0,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "raw_only_level0_e2",
+      "description": "E2 raw-only deform on level-0 with health-mask bypass.",
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "per_channel",
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 0.0,
+          "deform_zero_init": false,
+          "deform_offset_l1_weight": 0.0001,
+          "deform_offset_tv_weight": 0.0,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "grouped_shared_e3",
+      "description": "E3 grouped shared offsets over physics-aligned raw channel groups.",
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 0.0,
+          "deform_zero_init": false,
+          "deform_offset_l1_weight": 0.0001,
+          "deform_offset_tv_weight": 0.0,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "bounded_grouped_e4",
+      "description": "E4 grouped shared offsets with bounded causal offsets, zero-init, warmup, and TV regularization.",
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "gated_mask_fusion_e5",
+      "description": "E5 E4 plus a block-level scalar gate biased toward the standard causal branch.",
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": true,
+          "deform_conv_gate_bias_init": -2.0
+        }
+      }
+    }
+  ]
+}

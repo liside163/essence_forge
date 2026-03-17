@@ -78,6 +78,16 @@ RAW_SENSOR_GROUP_TEMPLATES: dict[str, tuple[str, ...]] = {
         "motor_rpm_3",
         "motor_rpm_4",
     ),
+    "actuator_rpm": (
+        "actuator_ctrl_0",
+        "actuator_ctrl_1",
+        "actuator_ctrl_2",
+        "actuator_ctrl_3",
+        "motor_rpm_1",
+        "motor_rpm_2",
+        "motor_rpm_3",
+        "motor_rpm_4",
+    ),
     "baro": ("baro_alt", "baro_temp", "baro_pressure"),
 }
 
@@ -93,6 +103,14 @@ RESIDUAL_SENSOR_GROUP_TEMPLATES: dict[str, tuple[str, ...]] = {
         "accel_pos_res_y",
         "accel_pos_res_z",
     ),
+    "res_rpm_modal": (
+        "rpm_modal_common_res",
+        "rpm_modal_a_res",
+        "rpm_modal_b_res",
+        "rpm_modal_c_res",
+    ),
+    "res_baro": ("baro_pos_res", "baro_vel_res"),
+    "res_qgyro": ("qgyro_x_res", "qgyro_y_res"),
 }
 
 
@@ -162,6 +180,23 @@ def _build_sensor_groups(
 
 def build_raw_sensor_groups(channel_names: Sequence[str]) -> dict[str, tuple[int, ...]]:
     return _build_sensor_groups(channel_names, RAW_SENSOR_GROUP_TEMPLATES)
+
+
+def build_named_raw_groups(
+    channel_names: Sequence[str],
+    group_names: Sequence[str],
+) -> tuple[tuple[int, ...], ...]:
+    groups = build_raw_sensor_groups(channel_names)
+    resolved: list[tuple[int, ...]] = []
+    for group_name in group_names:
+        normalized = str(group_name).strip()
+        if normalized not in groups:
+            raise ValueError(
+                f"Unknown raw sensor group '{group_name}'. "
+                f"Available groups: {sorted(groups.keys())}"
+            )
+        resolved.append(groups[normalized])
+    return tuple(resolved)
 
 
 def build_raw_plus_residual_sensor_groups(

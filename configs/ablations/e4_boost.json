@@ -1,0 +1,482 @@
+{
+  "suite": "e4_boost",
+  "description": "E4-only bounded grouped temporal alignment local search without deform gate.",
+  "base_config": "configs/simplified_fft_lwpt_se_hil_a2b0_to_a2b1_stage3s.json",
+  "summary_metric_key": "finetuned_model_thresholded_target.macro_f1",
+  "ranking": {
+    "reference_experiment_id": "bounded_grouped_e4_ref",
+    "secondary_metric_key": "source_model_direct_target.macro_f1",
+    "confusion_matrix_cell": [
+      0,
+      2
+    ],
+    "primary_metric_tie_epsilon": 0.0005,
+    "multi_seed_gate": {
+      "min_thresholded_macro_f1": 0.8771,
+      "min_source_direct_macro_f1": 0.4417
+    }
+  },
+  "experiments": [
+    {
+      "id": "baseline",
+      "description": "Strong baseline without deformable TCN, kept to anchor E4-only search.",
+      "selection": {
+        "round": "baseline",
+        "param_change_count": 100
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": false,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "per_channel",
+          "deform_apply_levels": []
+        }
+      }
+    },
+    {
+      "id": "bounded_grouped_e4_ref",
+      "description": "Reference E4: bounded grouped offsets, zero-init, warmup, TV regularization, no deform gate.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 0
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_relax_reg",
+      "description": "Relax offset regularization to test whether E4 is currently over-constrained.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 2
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0003,
+          "deform_offset_tv_weight": 0.0005,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_tight_reg",
+      "description": "Tighten offset regularization to test whether stronger smoothing improves robustness.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 2
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0007,
+          "deform_offset_tv_weight": 0.002,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_lr_fast",
+      "description": "Increase offset branch learning-rate scale to let bounded offsets move faster.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 1
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.2,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_lr_slow",
+      "description": "Reduce offset branch learning-rate scale to keep the alignment path conservative.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 1
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.05,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_scale_wide",
+      "description": "Widen the bounded offset range while keeping the rest of E4 unchanged.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 1
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.5,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_scale_tight",
+      "description": "Tighten the bounded offset range to bias E4 toward smaller causal shifts.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 1
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 0.75,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 5,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_warmup_short",
+      "description": "Shorten warmup so bounded offsets start adapting earlier.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 1
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 3,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_warmup_long",
+      "description": "Lengthen warmup to delay offset updates and preserve the causal baseline longer.",
+      "selection": {
+        "round": "round1",
+        "param_change_count": 1
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 8,
+          "deform_offset_lr_scale": 0.1,
+          "deform_offset_l1_weight": 0.0005,
+          "deform_offset_tv_weight": 0.001,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_combo_soft",
+      "description": "Softer regularization plus faster offset branch and shorter warmup.",
+      "selection": {
+        "round": "round2",
+        "param_change_count": 4
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.0,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 3,
+          "deform_offset_lr_scale": 0.2,
+          "deform_offset_l1_weight": 0.0003,
+          "deform_offset_tv_weight": 0.0005,
+          "use_deform_conv_gate": false
+        }
+      }
+    },
+    {
+      "id": "e4_combo_soft_wide",
+      "description": "Softer regularization plus faster offsets, shorter warmup, and a wider bounded range.",
+      "selection": {
+        "round": "round2",
+        "param_change_count": 5
+      },
+      "overrides": {
+        "cross_sensor_residuals": {
+          "enable": false
+        },
+        "model": {
+          "use_deformable_tcn": true,
+          "concat_health_mask_channels": true,
+          "deform_scope": "raw_only",
+          "deform_bypass_health_mask": true,
+          "deform_group_mode": "shared_by_group",
+          "deform_groups": [
+            "accel",
+            "gyro",
+            "mag",
+            "pos",
+            "vel",
+            "quat",
+            "actuator_rpm",
+            "baro"
+          ],
+          "deform_apply_levels": [
+            0
+          ],
+          "deform_max_offset_scale": 1.5,
+          "deform_zero_init": true,
+          "deform_warmup_epochs": 3,
+          "deform_offset_lr_scale": 0.2,
+          "deform_offset_l1_weight": 0.0003,
+          "deform_offset_tv_weight": 0.0005,
+          "use_deform_conv_gate": false
+        }
+      }
+    }
+  ]
+}
