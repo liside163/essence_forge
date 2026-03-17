@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Sequence, Tuple
@@ -11,6 +12,13 @@ from typing import Any, Dict, Sequence, Tuple
 import numpy as np
 
 from essence_forge.config import ExperimentConfig
+from essence_forge.core.cross_sensor_residuals import (
+    default_cross_sensor_residual_channel_names,
+    fit_cross_sensor_residual_calibration,
+    is_calibrated_cross_sensor_residual_scheme,
+    normalize_cross_sensor_residual_scheme,
+    write_cross_sensor_residual_fit,
+)
 from essence_forge.core.datasets import (
     _append_cross_sensor_residual_features as standalone_append_cross_sensor_residual_features,
     _normalize_window_with_stats as standalone_normalize_window_with_stats,
@@ -24,6 +32,7 @@ from essence_forge.core.utils import read_json, write_json
 
 
 PRECOMPUTED_SPLITS = ("train", "val", "target_train", "target_val")
+CROSS_SENSOR_RESIDUAL_FIT_FILENAME = "cross_sensor_residual_fit.json"
 SPLIT_ARTIFACT_FILES = (
     "split_source_train.json",
     "split_source_val.json",
@@ -46,6 +55,24 @@ class PreprocessArtifactsRef:
     fingerprint_payload: Dict[str, Any]
 
 
+def _remove_directory_tree(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+        return
+    except OSError as exc:
+        fallback = path.with_name(f"{path.name}.stale.{uuid.uuid4().hex[:8]}")
+        path.rename(fallback)
+        try:
+            shutil.rmtree(fallback)
+        except OSError as cleanup_exc:
+            print(
+                f"[WARN] failed to remove {path} directly ({exc}); "
+                f"renamed to {fallback} but cleanup also failed ({cleanup_exc})."
+            )
+
+
 def _normalize_cross_sensor_residuals_for_fingerprint(
     cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -60,18 +87,28 @@ def _normalize_cross_sensor_residuals_for_fingerprint(
     if not enable:
         return payload
 
+    scheme = normalize_cross_sensor_residual_scheme(residual_cfg.get("scheme"))
+    payload["scheme"] = scheme
+    payload["clip_value"] = residual_cfg.get("clip_value", 6.0)
+    payload["calibration_split"] = residual_cfg.get("calibration_split", "source_train_nofault")
+    payload["max_lag_steps"] = residual_cfg.get("max_lag_steps", 4)
     window_norm = bool(residual_cfg.get("window_norm", True))
-    payload["window_norm"] = window_norm
-    if window_norm:
+    if scheme == "legacy9":
+        payload["window_norm"] = window_norm
         norm_eps = residual_cfg.get("norm_eps", 1e-6)
-        try:
-            payload["norm_eps"] = float(norm_eps)
-        except (TypeError, ValueError):
-            payload["norm_eps"] = norm_eps
+        if window_norm:
+            try:
+                payload["norm_eps"] = float(norm_eps)
+            except (TypeError, ValueError):
+                payload["norm_eps"] = norm_eps
 
-    for key in ("channels", "num_channels", "mask_mode"):
-        if key in residual_cfg:
-            payload[key] = residual_cfg.get(key)
+    if "mask_mode" in residual_cfg:
+        payload["mask_mode"] = residual_cfg.get("mask_mode")
+    payload["channels"] = [
+        {"name": name}
+        for name in default_cross_sensor_residual_channel_names(scheme)
+    ]
+    payload["num_channels"] = len(default_cross_sensor_residual_channel_names(scheme))
     return payload
 
 
@@ -114,6 +151,18 @@ def compute_preprocess_fingerprint(cfg: Dict[str, Any]) -> Tuple[str, Dict[str, 
     )
     fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return fingerprint, payload
+
+
+def required_preprocess_artifact_files(runtime_payload: Dict[str, Any]) -> tuple[str, ...]:
+    residual_cfg = runtime_payload.get("cross_sensor_residuals", {})
+    if not isinstance(residual_cfg, dict):
+        return PREPROCESS_ARTIFACT_FILES
+    if not bool(residual_cfg.get("enable", False)):
+        return PREPROCESS_ARTIFACT_FILES
+    scheme = normalize_cross_sensor_residual_scheme(residual_cfg.get("scheme"))
+    if not is_calibrated_cross_sensor_residual_scheme(scheme):
+        return PREPROCESS_ARTIFACT_FILES
+    return PREPROCESS_ARTIFACT_FILES + (CROSS_SENSOR_RESIDUAL_FIT_FILENAME,)
 
 
 def build_stage_windows(
@@ -164,7 +213,13 @@ def append_cross_sensor_residual_features(normalized_window: np.ndarray) -> np.n
     std = np.ones((base_channels,), dtype=np.float32)
     preserved = dict(CFG.values)
     CFG.values["input_dim"] = base_channels
-    CFG.values["cross_sensor_residual_channels"] = 9
+    scheme = normalize_cross_sensor_residual_scheme(
+        getattr(CFG, "cross_sensor_residual_scheme", "legacy9")
+    )
+    residual_names = default_cross_sensor_residual_channel_names(scheme)
+    CFG.values["cross_sensor_residual_scheme"] = scheme
+    CFG.values["cross_sensor_residual_channels"] = len(residual_names)
+    CFG.values["cross_sensor_residual_channel_names"] = residual_names
     CFG.values["windows_sample_rate_hz"] = 120
     CFG.values["cross_sensor_residual_window_norm"] = True
     CFG.values["cross_sensor_residual_norm_eps"] = 1e-6
@@ -189,8 +244,18 @@ def _split_artifacts_ready(run_dir: Path) -> bool:
     return all((run_dir / name).exists() for name in SPLIT_ARTIFACT_FILES)
 
 
+def _cross_sensor_residual_fit_required() -> bool:
+    return bool(getattr(CFG, "use_cross_sensor_residuals", False)) and is_calibrated_cross_sensor_residual_scheme(
+        getattr(CFG, "cross_sensor_residual_scheme", "legacy9")
+    )
+
+
 def _precomputed_ready(run_dir: Path) -> bool:
     return all((run_dir / "precomputed" / split / "manifest.json").exists() for split in PRECOMPUTED_SPLITS)
+
+
+def _preprocess_artifacts_ready(run_dir: Path, runtime_payload: Dict[str, Any]) -> bool:
+    return all((run_dir / name).exists() for name in required_preprocess_artifact_files(runtime_payload)) and _precomputed_ready(run_dir)
 
 
 def _write_preprocess_ref(
@@ -232,6 +297,39 @@ def _ensure_source_stats(run_dir: Path) -> None:
             "std": std.tolist(),
         },
     )
+
+
+def _ensure_cross_sensor_residual_fit(run_dir: Path, force_rebuild: bool = False) -> Path | None:
+    if not _cross_sensor_residual_fit_required():
+        CFG.values["cross_sensor_residual_fit_path"] = ""
+        return None
+
+    fit_path = run_dir / CROSS_SENSOR_RESIDUAL_FIT_FILENAME
+    if fit_path.exists() and not force_rebuild:
+        CFG.values["cross_sensor_residual_fit_path"] = str(fit_path.resolve())
+        return fit_path
+
+    source_train = read_json(run_dir / "split_source_train.json")
+    normal_class_id = int(getattr(CFG, "fault_to_class", {}).get(10, 10))
+    normal_records = [
+        record
+        for record in source_train
+        if int(record.get("class_id", -1)) == normal_class_id
+    ]
+    if len(normal_records) == 0:
+        raise ValueError("source_train split does not contain no-fault records for residual calibration")
+
+    loader = MissionLoader(max_cache_items=64)
+    raw_sequences = [loader.load(record["file_path"]) for record in normal_records]
+    fit_payload = fit_cross_sensor_residual_calibration(
+        raw_sequences=raw_sequences,
+        sample_rate_hz=float(getattr(CFG, "windows_sample_rate_hz", 120.0)),
+        max_lag_steps=int(getattr(CFG, "cross_sensor_residual_max_lag_steps", 4)),
+        channel_names=tuple(str(name) for name in getattr(CFG, "channel_names", ())),
+    )
+    write_cross_sensor_residual_fit(fit_path, fit_payload)
+    CFG.values["cross_sensor_residual_fit_path"] = str(fit_path.resolve())
+    return fit_path
 
 
 def _precompute_run_dir(
@@ -291,10 +389,11 @@ def ensure_preprocess_artifacts(
         )
 
     if force_rebuild and (run_dir / "precomputed").exists():
-        shutil.rmtree(run_dir / "precomputed")
+        _remove_directory_tree(run_dir / "precomputed")
 
     _ensure_source_stats(run_dir)
-    if force_rebuild or not _precomputed_ready(run_dir):
+    _ensure_cross_sensor_residual_fit(run_dir, force_rebuild=force_rebuild)
+    if force_rebuild or not _preprocess_artifacts_ready(run_dir, runtime_payload):
         _precompute_run_dir(
             run_dir=run_dir,
             precompute_num_workers=precompute_num_workers,

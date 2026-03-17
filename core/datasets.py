@@ -28,6 +28,14 @@ from essence_forge.core.channel_layout import (
     LEGACY_POS_INDICES,
     LEGACY_VEL_INDICES,
 )
+from essence_forge.core.cross_sensor_residuals import (
+    compute_calibrated_cross_sensor_residuals,
+    compute_legacy_cross_sensor_residuals,
+    default_cross_sensor_residual_channel_names,
+    is_calibrated_cross_sensor_residual_scheme,
+    load_cross_sensor_residual_fit,
+    normalize_cross_sensor_residual_scheme,
+)
 from essence_forge.core.gan_augment import (
     GanTrainingConfig,
     TargetedSyntheticBankAugmentor,
@@ -222,49 +230,12 @@ def compute_cross_sensor_residuals(
     normalize: bool = True,
     eps: float = 1e-6,
 ) -> np.ndarray:
-    """
-    从任意 `C >= 19` 的原始数据计算 9ch 交叉传感器一致性残差。
-
-    输入: raw [T, C] (未 z-score, C >= 19)
-    输出: residuals [T, 9]
-
-    仅使用 legacy core 前 19 通道中的 accel/pos/vel 位置。
-    """
-
-    raw_arr = np.asarray(raw, dtype=np.float32)
-    if raw_arr.ndim != 2:
-        raise ValueError(f"raw 必须是 2D 数组，实际={raw_arr.ndim}D")
-    if raw_arr.shape[1] < LEGACY_CORE_CHANNEL_COUNT:
-        raise ValueError(
-            f"raw 通道数不足，至少需要 {LEGACY_CORE_CHANNEL_COUNT}，实际={raw_arr.shape[1]}"
-        )
-    if float(dt) <= 0.0:
-        raise ValueError(f"dt 必须 > 0，当前={dt}")
-
-    accel = raw_arr[:, list(LEGACY_ACCEL_INDICES)]   # [T, 3]
-    vel = raw_arr[:, list(LEGACY_VEL_INDICES)]       # [T, 3]
-    pos = raw_arr[:, list(LEGACY_POS_INDICES)]       # [T, 3]
-
-    residuals = np.zeros((raw_arr.shape[0], 9), dtype=np.float32)
-
-    # ch 0-2: IMU-EKF 速度一致性, d(vel)/dt ≈ accel
-    dvel = np.diff(vel, axis=0, prepend=vel[:1]) / float(dt)
-    residuals[:, 0:3] = dvel - accel
-
-    # ch 3-5: 位置-速度一致性, d(pos)/dt ≈ vel
-    dpos = np.diff(pos, axis=0, prepend=pos[:1]) / float(dt)
-    residuals[:, 3:6] = dpos - vel
-
-    # ch 6-8: 加速度-位置二阶一致性, d²(pos)/dt² ≈ accel
-    ddpos = np.diff(dpos, axis=0, prepend=dpos[:1]) / float(dt)
-    residuals[:, 6:9] = ddpos - accel
-
-    if bool(normalize):
-        scale = np.std(residuals, axis=0, dtype=np.float32)
-        scale = np.maximum(scale, float(eps)).astype(np.float32)
-        residuals = residuals / scale.reshape(1, -1)
-
-    return residuals.astype(np.float32, copy=False)
+    return compute_legacy_cross_sensor_residuals(
+        raw=raw,
+        dt=dt,
+        normalize=normalize,
+        eps=eps,
+    )
 
 
 def _append_cross_sensor_residual_features(
@@ -289,10 +260,14 @@ def _append_cross_sensor_residual_features(
             f"窗口通道数小于基础通道数，window={normalized_window.shape[1]}, base={base_channels}"
         )
 
-    residual_channels = int(getattr(CFG, "cross_sensor_residual_channels", 9))
-    if residual_channels != 9:
+    scheme = normalize_cross_sensor_residual_scheme(
+        getattr(CFG, "cross_sensor_residual_scheme", "legacy9")
+    )
+    residual_names = default_cross_sensor_residual_channel_names(scheme)
+    residual_channels = int(getattr(CFG, "cross_sensor_residual_channels", len(residual_names)))
+    if residual_channels != len(residual_names):
         raise ValueError(
-            f"当前实现固定追加 9 个残差通道，配置为 {residual_channels} 不受支持"
+            f"残差通道数与 scheme 不一致，scheme={scheme}, channels={residual_channels}"
         )
 
     mean_vec = np.asarray(mean, dtype=np.float32).reshape(-1)
@@ -307,12 +282,23 @@ def _append_cross_sensor_residual_features(
     base_phys = base_norm * std_vec[:base_channels].reshape(1, -1) + mean_vec[:base_channels].reshape(1, -1)
 
     sample_rate_hz = max(float(getattr(CFG, "windows_sample_rate_hz", 120)), 1e-6)
-    residuals = compute_cross_sensor_residuals(
-        base_phys,
-        dt=1.0 / sample_rate_hz,
-        normalize=bool(getattr(CFG, "cross_sensor_residual_window_norm", True)),
-        eps=float(getattr(CFG, "cross_sensor_residual_norm_eps", 1e-6)),
-    )
+    if is_calibrated_cross_sensor_residual_scheme(scheme):
+        fit_path = str(getattr(CFG, "cross_sensor_residual_fit_path", "")).strip()
+        if not fit_path:
+            raise ValueError("Calibrated cross-sensor residuals require cross_sensor_residual_fit_path")
+        residuals = compute_calibrated_cross_sensor_residuals(
+            raw=base_phys,
+            fit_payload=load_cross_sensor_residual_fit(fit_path),
+            scheme=scheme,
+            clip_value=float(getattr(CFG, "cross_sensor_residual_clip_value", 6.0)),
+        )
+    else:
+        residuals = compute_cross_sensor_residuals(
+            base_phys,
+            dt=1.0 / sample_rate_hz,
+            normalize=bool(getattr(CFG, "cross_sensor_residual_window_norm", True)),
+            eps=float(getattr(CFG, "cross_sensor_residual_norm_eps", 1e-6)),
+        )
     return np.concatenate([normalized_window, residuals], axis=1).astype(np.float32, copy=False)
 
 

@@ -8,6 +8,7 @@ config.py
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,14 @@ from essence_forge.core.channel_layout import (
     channel_names_from_specs,
     validate_legacy_core_prefix,
     validate_unique_channel_names,
+)
+from essence_forge.core.cross_sensor_residuals import (
+    cross_sensor_residual_channel_count_for_scheme,
+    default_cross_sensor_residual_channel_names,
+    default_cross_sensor_residual_config,
+    is_calibrated_cross_sensor_residual_scheme,
+    normalize_cross_sensor_residual_scheme,
+    required_raw_channel_names_for_scheme,
 )
 
 
@@ -252,20 +261,13 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     channel_names = channel_names_from_specs(channels)
     validate_unique_channel_names(channel_names)
     input_dim = len(channels)
-    residual_channels_raw = cross_sensor_residuals.get("channels", [])
-    residual_channel_specs: List[Dict[str, Any]] = (
-        [x for x in residual_channels_raw if isinstance(x, dict)]
-        if isinstance(residual_channels_raw, list)
-        else []
+    residual_defaults = default_cross_sensor_residual_config()
+    residual_scheme = normalize_cross_sensor_residual_scheme(
+        cross_sensor_residuals.get("scheme", residual_defaults["scheme"])
     )
-    residual_channel_names = tuple(
-        str(item.get("name", f"res_{idx}"))
-        for idx, item in enumerate(residual_channel_specs)
-    )
-    cross_sensor_residual_channels = (
-        len(residual_channel_specs)
-        if len(residual_channel_specs) > 0
-        else int(cross_sensor_residuals.get("num_channels", 9))
+    residual_channel_names = default_cross_sensor_residual_channel_names(residual_scheme)
+    cross_sensor_residual_channels = cross_sensor_residual_channel_count_for_scheme(
+        residual_scheme
     )
 
     fault_to_class = {
@@ -324,10 +326,26 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         "channel_names": channel_names,
         "input_dim": input_dim,
         "use_cross_sensor_residuals": bool(cross_sensor_residuals.get("enable", False)),
+        "cross_sensor_residual_scheme": residual_scheme,
         "cross_sensor_residual_channels": int(cross_sensor_residual_channels),
         "cross_sensor_residual_channel_names": residual_channel_names,
         "cross_sensor_residual_window_norm": bool(cross_sensor_residuals.get("window_norm", True)),
         "cross_sensor_residual_norm_eps": float(cross_sensor_residuals.get("norm_eps", 1e-6)),
+        "cross_sensor_residual_clip_value": float(
+            cross_sensor_residuals.get("clip_value", residual_defaults["clip_value"])
+        ),
+        "cross_sensor_residual_calibration_split": str(
+            cross_sensor_residuals.get(
+                "calibration_split",
+                residual_defaults["calibration_split"],
+            )
+        ).strip().lower(),
+        "cross_sensor_residual_max_lag_steps": int(
+            cross_sensor_residuals.get("max_lag_steps", residual_defaults["max_lag_steps"])
+        ),
+        "cross_sensor_residual_fit_path": str(
+            cross_sensor_residuals.get("fit_path", "")
+        ).strip(),
         "cross_sensor_residual_mask_mode": str(
             cross_sensor_residuals.get("mask_mode", "base_only")
         ).strip().lower(),
@@ -426,10 +444,15 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         "use_channel_se": bool(model.get("use_channel_se", True)),
         "channel_se_reduction": int(model.get("channel_se_reduction", 8)),
         "use_mixed_pooling": bool(model.get("use_mixed_pooling", True)),
+        "use_freq_branch": bool(model.get("use_freq_branch", True)),
         "freq_branch_channels": int(model.get("freq_branch_channels", model.get("tcn_channels", 64))),
         "freq_branch_kernel_size": int(model.get("freq_branch_kernel_size", 3)),
         "freq_branch_dropout": float(model.get("freq_branch_dropout", model.get("tcn_dropout", 0.1))),
-        "use_freq_branch_se": bool(model.get("use_freq_branch_se", model.get("use_channel_se", True))),
+        "use_freq_branch_se": (
+            bool(model.get("use_freq_branch_se", model.get("use_channel_se", True)))
+            if bool(model.get("use_freq_branch", True))
+            else False
+        ),
         "freq_branch_se_reduction": int(model.get("freq_branch_se_reduction", model.get("channel_se_reduction", 8))),
         "concat_health_mask_channels": bool(model.get("concat_health_mask_channels", True)),
         "use_sensor_group_attention": bool(model.get("use_sensor_group_attention", False)),
@@ -443,6 +466,18 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         "deformable_causal_mode": str(model.get("deformable_causal_mode", "strict")).strip().lower(),
         "deform_offset_kernel_size": int(model.get("deform_offset_kernel_size", 3)),
         "deform_offset_l1_weight": float(model.get("deform_offset_l1_weight", 1e-4)),
+        "deform_apply_levels": _as_tuple_int(model.get("deform_apply_levels", []), ()),
+        "deform_scope": str(model.get("deform_scope", "all_inputs")).strip().lower(),
+        "deform_group_mode": str(model.get("deform_group_mode", "per_channel")).strip().lower(),
+        "deform_groups": tuple(str(x).strip() for x in model.get("deform_groups", [])),
+        "deform_max_offset_scale": float(model.get("deform_max_offset_scale", 0.0)),
+        "deform_zero_init": bool(model.get("deform_zero_init", False)),
+        "deform_warmup_epochs": int(model.get("deform_warmup_epochs", 0)),
+        "deform_offset_lr_scale": float(model.get("deform_offset_lr_scale", 1.0)),
+        "deform_offset_tv_weight": float(model.get("deform_offset_tv_weight", 0.0)),
+        "deform_bypass_health_mask": bool(model.get("deform_bypass_health_mask", False)),
+        "use_deform_conv_gate": bool(model.get("use_deform_conv_gate", False)),
+        "deform_conv_gate_bias_init": float(model.get("deform_conv_gate_bias_init", -2.0)),
         "use_hybrid_deform_multiscale_tcn": bool(model.get("use_hybrid_deform_multiscale_tcn", False)),
         "hybrid_tcn_kernel_sizes": _as_tuple_int(model.get("hybrid_tcn_kernel_sizes", [3, 5, 7]), (3, 5, 7)),
         "use_levelwise_tcn_aggregation": bool(model.get("use_levelwise_tcn_aggregation", False)),
@@ -647,13 +682,35 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     if cfg.use_cross_sensor_residuals:
         if cfg.input_dim < 19:
             raise ValueError("启用 cross_sensor_residuals 时 input_dim 至少需要 19")
-        if cfg.cross_sensor_residual_channels != 9:
+        expected_residual_channels = cross_sensor_residual_channel_count_for_scheme(
+            cfg.cross_sensor_residual_scheme
+        )
+        if cfg.cross_sensor_residual_channels != expected_residual_channels:
             raise ValueError(
-                "当前实现仅支持 9 个 cross_sensor_residuals 通道，"
+                "cross_sensor_residuals 通道数与 scheme 不一致，"
                 f"当前={cfg.cross_sensor_residual_channels}"
             )
+        if tuple(cfg.cross_sensor_residual_channel_names) != default_cross_sensor_residual_channel_names(
+            cfg.cross_sensor_residual_scheme
+        ):
+            raise ValueError("cross_sensor_residual_channel_names 必须与 scheme 默认通道名一致")
+        required_channels = set(required_raw_channel_names_for_scheme(cfg.cross_sensor_residual_scheme))
+        missing_channels = sorted(required_channels - set(cfg.channel_names))
+        if len(missing_channels) > 0:
+            raise ValueError(
+                "启用 cross_sensor_residuals 时缺少必要原始通道: "
+                f"{missing_channels}"
+            )
+        if is_calibrated_cross_sensor_residual_scheme(cfg.cross_sensor_residual_scheme) and cfg.input_dim < 30:
+            raise ValueError("校准式 cross_sensor_residuals 需要至少 30 维原始输入")
     if cfg.cross_sensor_residual_norm_eps <= 0.0:
         raise ValueError("cross_sensor_residuals.norm_eps 必须 > 0")
+    if cfg.cross_sensor_residual_clip_value <= 0.0:
+        raise ValueError("cross_sensor_residuals.clip_value 必须 > 0")
+    if cfg.cross_sensor_residual_calibration_split != "source_train_nofault":
+        raise ValueError("当前仅支持 cross_sensor_residuals.calibration_split=source_train_nofault")
+    if cfg.cross_sensor_residual_max_lag_steps < 0:
+        raise ValueError("cross_sensor_residuals.max_lag_steps 必须 >= 0")
     if cfg.cross_sensor_residual_mask_mode != "base_only":
         raise ValueError("当前仅支持 cross_sensor_residuals.mask_mode=base_only")
     if abs((cfg.train_ratio + cfg.val_ratio + cfg.test_ratio) - 1.0) > 1e-6:
@@ -771,6 +828,26 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         raise ValueError("model.deform_offset_kernel_size 必须是大于1的奇数")
     if cfg.deform_offset_l1_weight < 0.0:
         raise ValueError("model.deform_offset_l1_weight 必须 >= 0")
+    if cfg.deform_scope not in {"all_inputs", "raw_only"}:
+        raise ValueError("model.deform_scope 必须是 all_inputs 或 raw_only")
+    if cfg.deform_group_mode not in {"per_channel", "shared_by_group"}:
+        raise ValueError("model.deform_group_mode 必须是 per_channel 或 shared_by_group")
+    if cfg.deform_group_mode == "shared_by_group" and len(cfg.deform_groups) == 0:
+        raise ValueError("model.deform_groups 在 shared_by_group 模式下不能为空")
+    if cfg.deform_max_offset_scale < 0.0:
+        raise ValueError("model.deform_max_offset_scale 必须 >= 0")
+    if cfg.deform_warmup_epochs < 0:
+        raise ValueError("model.deform_warmup_epochs 必须 >= 0")
+    if cfg.deform_offset_lr_scale <= 0.0:
+        raise ValueError("model.deform_offset_lr_scale 必须 > 0")
+    if cfg.deform_offset_tv_weight < 0.0:
+        raise ValueError("model.deform_offset_tv_weight 必须 >= 0")
+    if not math.isfinite(float(cfg.deform_conv_gate_bias_init)):
+        raise ValueError("model.deform_conv_gate_bias_init 必须是有限数")
+    if any(level < 0 for level in cfg.deform_apply_levels):
+        raise ValueError("model.deform_apply_levels 仅支持非负层索引")
+    if any(level >= cfg.tcn_num_levels for level in cfg.deform_apply_levels):
+        raise ValueError("model.deform_apply_levels 含越界层索引")
     if len(cfg.hybrid_tcn_kernel_sizes) == 0:
         raise ValueError("model.hybrid_tcn_kernel_sizes 不能为空")
     for kernel in cfg.hybrid_tcn_kernel_sizes:
@@ -888,13 +965,15 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         _validate_prob("lwpt_dropout", cfg.lwpt_dropout)
     if cfg.use_channel_se and cfg.channel_se_reduction <= 0:
         raise ValueError("channel_se_reduction 必须 > 0")
-    if cfg.freq_branch_channels <= 0:
+    if cfg.use_freq_branch and cfg.freq_branch_channels <= 0:
         raise ValueError("freq_branch_channels 必须 > 0")
-    if cfg.freq_branch_kernel_size <= 1 or cfg.freq_branch_kernel_size % 2 == 0:
+    if cfg.use_freq_branch and (
+        cfg.freq_branch_kernel_size <= 1 or cfg.freq_branch_kernel_size % 2 == 0
+    ):
         raise ValueError("freq_branch_kernel_size 必须是大于1的奇数")
-    if not (0.0 <= cfg.freq_branch_dropout < 1.0):
+    if cfg.use_freq_branch and not (0.0 <= cfg.freq_branch_dropout < 1.0):
         raise ValueError("freq_branch_dropout 必须在 [0,1) 范围")
-    if cfg.use_freq_branch_se and cfg.freq_branch_se_reduction <= 0:
+    if cfg.use_freq_branch and cfg.use_freq_branch_se and cfg.freq_branch_se_reduction <= 0:
         raise ValueError("freq_branch_se_reduction 必须 > 0")
 
     if cfg.use_tf2d_branch:

@@ -249,6 +249,9 @@ def _infer_simplified_input_dim(state_dict: Mapping[str, torch.Tensor]) -> int |
     # 新结构存在独立频域分支，可直接用其输入通道确认 input_dim。
     freq_proj = state_dict.get("freq_projection.0.weight")
     if freq_proj is not None and freq_proj.ndim == 3:
+        health_mask_proj = state_dict.get("health_mask_projection.weight")
+        if health_mask_proj is not None and health_mask_proj.ndim == 3:
+            return int(freq_proj.shape[1] + health_mask_proj.shape[1])
         return int(freq_proj.shape[1])
 
     # 旧结构为 early fusion，主干输入通道约等于 2 * input_dim。
@@ -381,14 +384,24 @@ def _infer_simplified_init_kwargs_from_state_dict(
 
     freq_proj = state_dict.get("freq_projection.0.weight")
     if freq_proj is not None and freq_proj.ndim == 3:
+        kwargs["use_freq_branch"] = True
         kwargs["freq_branch_channels"] = int(freq_proj.shape[0])
         kwargs["freq_branch_kernel_size"] = int(freq_proj.shape[-1])
-    kwargs["use_freq_branch_se"] = _has_prefix(state_dict, "freq_channel_se.")
+    else:
+        kwargs["use_freq_branch"] = False
+    kwargs["use_freq_branch_se"] = bool(kwargs["use_freq_branch"]) and _has_prefix(
+        state_dict,
+        "freq_channel_se.",
+    )
 
     late_fusion_weight = state_dict.get("late_fusion_proj.0.weight")
     if late_fusion_weight is not None and late_fusion_weight.ndim == 2:
         time_channels = int(kwargs.get("tcn_channels", CFG.tcn_channels))
-        freq_channels = int(kwargs.get("freq_branch_channels", time_channels))
+        freq_channels = (
+            int(kwargs.get("freq_branch_channels", time_channels))
+            if bool(kwargs.get("use_freq_branch", True))
+            else 0
+        )
         base_late_dim = time_channels + freq_channels
         late_in_features = int(late_fusion_weight.shape[1])
         if late_in_features == base_late_dim:
@@ -396,11 +409,39 @@ def _infer_simplified_init_kwargs_from_state_dict(
         elif late_in_features == base_late_dim * 2:
             kwargs["use_mixed_pooling"] = True
 
-    conv1_has_deform = _has_prefix(state_dict, "network.0.conv1.offset_conv.")
-    conv2_has_deform = _has_prefix(state_dict, "network.0.conv2.offset_conv.")
-    hybrid_has_deform = _has_prefix(state_dict, "network.0.hybrid_deform_conv.offset_conv.")
+    conv1_has_deform = _has_prefix(state_dict, "network.0.conv1.offset_conv.") or _has_prefix(
+        state_dict,
+        "network.0.conv1.group_offset_convs.",
+    )
+    conv2_has_deform = _has_prefix(state_dict, "network.0.conv2.offset_conv.") or _has_prefix(
+        state_dict,
+        "network.0.conv2.group_offset_convs.",
+    )
+    hybrid_has_deform = _has_prefix(state_dict, "network.0.hybrid_deform_conv.offset_conv.") or _has_prefix(
+        state_dict,
+        "network.0.hybrid_deform_conv.group_offset_convs.",
+    )
     kwargs["use_deformable_tcn"] = bool(conv1_has_deform or conv2_has_deform or hybrid_has_deform)
     kwargs["deformable_conv_mode"] = "both" if conv2_has_deform else "conv1_only"
+    kwargs["deform_apply_levels"] = tuple(
+        sorted(
+            {
+                int(key.split(".")[1])
+                for key in state_dict.keys()
+                if (
+                    ".offset_conv." in key or ".group_offset_convs." in key
+                )
+                and key.startswith("network.")
+            }
+        )
+    )
+    kwargs["deform_group_mode"] = (
+        "shared_by_group"
+        if any(".group_offset_convs." in key for key in state_dict.keys())
+        else "per_channel"
+    )
+    kwargs["deform_bypass_health_mask"] = _has_prefix(state_dict, "health_mask_projection.")
+    kwargs["use_deform_conv_gate"] = _has_prefix(state_dict, "network.0.deform_conv_gate_logit")
     kwargs["use_hybrid_deform_multiscale_tcn"] = bool(
         _has_prefix(state_dict, "network.0.hybrid_deform_conv.")
         and _has_prefix(state_dict, "network.0.hybrid_multi_scale_conv.")
@@ -418,6 +459,12 @@ def _infer_simplified_init_kwargs_from_state_dict(
             offset_weight = state_dict.get("network.0.conv2.offset_conv.weight")
         if offset_weight is None:
             offset_weight = state_dict.get("network.0.hybrid_deform_conv.offset_conv.weight")
+        if offset_weight is None:
+            offset_weight = state_dict.get("network.0.conv1.group_offset_convs.0.weight")
+        if offset_weight is None:
+            offset_weight = state_dict.get("network.0.conv2.group_offset_convs.0.weight")
+        if offset_weight is None:
+            offset_weight = state_dict.get("network.0.hybrid_deform_conv.group_offset_convs.0.weight")
         if offset_weight is not None and offset_weight.ndim == 3:
             kwargs["deform_offset_kernel_size"] = int(offset_weight.shape[-1])
 
@@ -533,8 +580,8 @@ def load_temporal_convnet_from_checkpoint(
 
     errors: list[tuple[str, str]] = []
     for source, model_kwargs in deduped_attempts:
-        model = model_class(**model_kwargs).to(resolved_device)
         try:
+            model = model_class(**model_kwargs).to(resolved_device)
             model.load_state_dict(state_dict)
             return model, payload, {
                 "model_kwargs_source": source,

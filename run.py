@@ -25,6 +25,16 @@ TARGET_MODEL_NAME = "tcn_finetuned_essence_forge"
 
 def _activate_runtime_config(config: ExperimentConfig, run_dir: Path) -> Path:
     snapshot_path = config.write_runtime_snapshot(run_dir)
+    fit_path = run_dir / "cross_sensor_residual_fit.json"
+    if fit_path.exists():
+        snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        residual_cfg = snapshot_payload.setdefault("cross_sensor_residuals", {})
+        if isinstance(residual_cfg, dict):
+            residual_cfg["fit_path"] = str(fit_path.resolve())
+            snapshot_path.write_text(
+                json.dumps(snapshot_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
     os.environ["ESSENCE_FORGE_CONFIG_PATH"] = str(snapshot_path)
     os.environ["UAV_TCN_CONFIG_PATH"] = str(snapshot_path)
     reload_config(snapshot_path)

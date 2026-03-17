@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -132,6 +132,10 @@ class DeformableCausalConv1d(nn.Module):
         causal_mode: str = "strict",
         groups: int = 1,
         bias: bool = True,
+        group_mode: str = "per_channel",
+        channel_groups: Sequence[Sequence[int]] | None = None,
+        max_offset_scale: float = 0.0,
+        zero_init: bool = False,
     ) -> None:
         super().__init__()
         if in_channels <= 0:
@@ -154,6 +158,11 @@ class DeformableCausalConv1d(nn.Module):
         causal_mode_normalized = str(causal_mode).strip().lower()
         if causal_mode_normalized not in {"strict", "relaxed"}:
             raise ValueError("causal_mode 必须是 strict 或 relaxed")
+        group_mode_normalized = str(group_mode).strip().lower()
+        if group_mode_normalized not in {"per_channel", "shared_by_group"}:
+            raise ValueError("group_mode 必须是 per_channel 或 shared_by_group")
+        if float(max_offset_scale) < 0.0:
+            raise ValueError("max_offset_scale 必须 >= 0")
 
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels)
@@ -162,6 +171,14 @@ class DeformableCausalConv1d(nn.Module):
         self.offset_kernel_size = int(offset_kernel_size)
         self.causal_mode = causal_mode_normalized
         self.groups = int(groups)
+        self.group_mode = group_mode_normalized
+        self.max_offset_scale = float(max_offset_scale)
+        self.zero_init = bool(zero_init)
+        self.channel_groups = self._normalize_channel_groups(
+            channel_groups=channel_groups,
+            in_channels=self.in_channels,
+            group_mode=self.group_mode,
+        )
 
         # 参数形状与 Conv1d 保持一致: [C_out, C_in/groups, K]
         self.weight = nn.Parameter(
@@ -170,17 +187,61 @@ class DeformableCausalConv1d(nn.Module):
         self.bias = nn.Parameter(torch.empty(self.out_channels)) if bool(bias) else None
         self.reset_parameters()
 
-        # per-channel K offsets：depthwise 因果卷积输出 [B, C_in*K, T]
-        self.offset_conv = nn.Conv1d(
-            in_channels=self.in_channels,
-            out_channels=self.in_channels * self.kernel_size,
-            kernel_size=self.offset_kernel_size,
-            stride=1,
-            padding=0,
-            groups=self.in_channels,
-            bias=True,
-        )
+        # per-channel K offsets: depthwise causal conv outputs [B, C*K, T]
+        self.offset_conv: nn.Conv1d | None = None
+        self.group_offset_convs: nn.ModuleList | None = None
+        if self.group_mode == "per_channel":
+            self.offset_conv = nn.Conv1d(
+                in_channels=self.in_channels,
+                out_channels=self.in_channels * self.kernel_size,
+                kernel_size=self.offset_kernel_size,
+                stride=1,
+                padding=0,
+                groups=self.in_channels,
+                bias=True,
+            )
+        else:
+            self.group_offset_convs = nn.ModuleList(
+                [
+                    nn.Conv1d(
+                        in_channels=len(group),
+                        out_channels=self.kernel_size,
+                        kernel_size=self.offset_kernel_size,
+                        stride=1,
+                        padding=0,
+                        groups=1,
+                        bias=True,
+                    )
+                    for group in self.channel_groups
+                ]
+            )
+        self._reset_offset_parameters()
         self._last_offset_l1: torch.Tensor | None = None
+        self._last_offset_tv: torch.Tensor | None = None
+        self._last_offset_saturation_ratio: torch.Tensor | None = None
+
+    @staticmethod
+    def _normalize_channel_groups(
+        *,
+        channel_groups: Sequence[Sequence[int]] | None,
+        in_channels: int,
+        group_mode: str,
+    ) -> tuple[tuple[int, ...], ...]:
+        if group_mode == "per_channel":
+            return tuple((idx,) for idx in range(int(in_channels)))
+        if channel_groups is None or len(channel_groups) == 0:
+            raise ValueError("shared_by_group 模式必须显式提供 channel_groups")
+        normalized = tuple(tuple(int(idx) for idx in group) for group in channel_groups)
+        flat = [idx for group in normalized for idx in group]
+        if len(flat) != int(in_channels):
+            raise ValueError(
+                f"channel_groups 必须完整覆盖所有输入通道，当前覆盖={len(flat)} 期望={in_channels}"
+            )
+        if len(set(flat)) != len(flat):
+            raise ValueError("channel_groups 含重复通道索引")
+        if min(flat) < 0 or max(flat) >= int(in_channels):
+            raise ValueError("channel_groups 含越界通道索引")
+        return normalized
 
     def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
@@ -189,18 +250,79 @@ class DeformableCausalConv1d(nn.Module):
             bound = 1.0 / math.sqrt(fan_in)
             nn.init.uniform_(self.bias, -bound, bound)
 
+    def _reset_offset_parameters(self) -> None:
+        init_bias = -20.0 if self.max_offset_scale > 0.0 and self.causal_mode == "strict" else 0.0
+        if self.offset_conv is not None:
+            if self.zero_init:
+                nn.init.zeros_(self.offset_conv.weight)
+                if self.offset_conv.bias is not None:
+                    nn.init.constant_(self.offset_conv.bias, init_bias)
+            return
+        if self.group_offset_convs is None:
+            return
+        for conv in self.group_offset_convs:
+            if self.zero_init:
+                nn.init.zeros_(conv.weight)
+                if conv.bias is not None:
+                    nn.init.constant_(conv.bias, init_bias)
+
     def get_last_offset_l1(self) -> torch.Tensor:
         if self._last_offset_l1 is None:
             return self.weight.new_zeros(())
         return self._last_offset_l1
 
+    def get_last_offset_tv(self) -> torch.Tensor:
+        if self._last_offset_tv is None:
+            return self.weight.new_zeros(())
+        return self._last_offset_tv
+
+    def get_last_offset_saturation_ratio(self) -> torch.Tensor:
+        if self._last_offset_saturation_ratio is None:
+            return self.weight.new_zeros(())
+        return self._last_offset_saturation_ratio
+
+    def iter_offset_parameters(self):
+        if self.offset_conv is not None:
+            yield from self.offset_conv.parameters()
+        if self.group_offset_convs is not None:
+            for conv in self.group_offset_convs:
+                yield from conv.parameters()
+
+    def _parameterize_offsets(self, offset_raw: torch.Tensor) -> torch.Tensor:
+        if self.max_offset_scale > 0.0:
+            max_offset = float(self.dilation) * float(self.max_offset_scale)
+            if self.causal_mode == "strict":
+                return -max_offset * torch.sigmoid(offset_raw)
+            return max_offset * torch.tanh(offset_raw)
+        if self.causal_mode == "strict":
+            return -offset_raw.abs()
+        return offset_raw
+
     def _build_offsets(self, x: torch.Tensor) -> torch.Tensor:
         pad_left = self.offset_kernel_size - 1
-        offset_raw = self.offset_conv(F.pad(x, (pad_left, 0)))  # [B, C*K, T]
-        bsz, _, seq_len = offset_raw.shape
-        offsets = offset_raw.view(bsz, self.in_channels, self.kernel_size, seq_len)
-        if self.causal_mode == "strict":
-            offsets = -offsets.abs()
+        x_padded = F.pad(x, (pad_left, 0))
+        if self.offset_conv is not None:
+            offset_raw = self.offset_conv(x_padded)  # [B, C*K, T]
+            bsz, _, seq_len = offset_raw.shape
+            offsets = offset_raw.view(bsz, self.in_channels, self.kernel_size, seq_len)
+            return self._parameterize_offsets(offsets)
+
+        if self.group_offset_convs is None:
+            raise RuntimeError("offset branch 未初始化")
+
+        bsz, _, seq_len = x.shape
+        offsets: torch.Tensor | None = None
+        for group_indices, group_conv in zip(self.channel_groups, self.group_offset_convs):
+            group_x = x_padded[:, group_indices, :]
+            group_raw = group_conv(group_x)  # [B, K, T]
+            group_offsets = self._parameterize_offsets(group_raw).unsqueeze(1)
+            if offsets is None:
+                offsets = group_offsets.new_zeros((bsz, self.in_channels, self.kernel_size, seq_len))
+            offsets[:, group_indices, :, :] = group_offsets.expand(
+                -1, len(group_indices), -1, -1
+            )
+        if offsets is None:
+            raise RuntimeError("shared_by_group 模式下未生成任何 offset")
         return offsets
 
     def _deform_sample(self, x: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
@@ -212,23 +334,36 @@ class DeformableCausalConv1d(nn.Module):
 
         dtype = x.dtype
         device = x.device
-        base_t = torch.arange(seq_len, device=device, dtype=dtype).view(1, 1, 1, seq_len)
+        pad_left = (self.kernel_size - 1) * self.dilation
+        x_padded = F.pad(x, (pad_left, 0))
+        padded_seq_len = x_padded.shape[-1]
+        base_t = (
+            torch.arange(seq_len, device=device, dtype=dtype).view(1, 1, 1, seq_len)
+            + float(pad_left)
+        )
         kernel_offsets = torch.arange(self.kernel_size, device=device, dtype=dtype).view(
             1, 1, self.kernel_size, 1
         )
-        base_positions = base_t - kernel_offsets * float(self.dilation)
+        reverse_offsets = float(self.kernel_size - 1) - kernel_offsets
+        base_positions = base_t - reverse_offsets * float(self.dilation)
         positions = base_positions + offsets
+        rounded_positions = positions.round()
+        positions = torch.where(
+            (positions - rounded_positions).abs() < 1e-6,
+            rounded_positions,
+            positions,
+        )
         # Guard against NaN/Inf offsets: invalid gather indices on CUDA would
         # trigger device-side assert and abort the whole trial process.
         positions = torch.nan_to_num(
             positions,
             nan=0.0,
-            posinf=float(seq_len - 1),
+            posinf=float(padded_seq_len - 1),
             neginf=0.0,
-        ).clamp(min=0.0, max=float(seq_len - 1))
+        ).clamp(min=0.0, max=float(padded_seq_len - 1))
 
         idx0 = torch.floor(positions)
-        idx1 = torch.clamp(idx0 + 1.0, max=float(seq_len - 1))
+        idx1 = torch.clamp(idx0 + 1.0, max=float(padded_seq_len - 1))
         alpha = torch.nan_to_num(
             positions - idx0,
             nan=0.0,
@@ -236,9 +371,9 @@ class DeformableCausalConv1d(nn.Module):
             neginf=0.0,
         ).clamp(min=0.0, max=1.0)
 
-        x_expanded = x.unsqueeze(2).expand(-1, -1, self.kernel_size, -1)
-        idx0_long = idx0.to(dtype=torch.long).clamp(min=0, max=seq_len - 1)
-        idx1_long = idx1.to(dtype=torch.long).clamp(min=0, max=seq_len - 1)
+        x_expanded = x_padded.unsqueeze(2).expand(-1, -1, self.kernel_size, -1)
+        idx0_long = idx0.to(dtype=torch.long).clamp(min=0, max=padded_seq_len - 1)
+        idx1_long = idx1.to(dtype=torch.long).clamp(min=0, max=padded_seq_len - 1)
         sample0 = torch.gather(x_expanded, dim=3, index=idx0_long)
         sample1 = torch.gather(x_expanded, dim=3, index=idx1_long)
         sampled = sample0 * (1.0 - alpha) + sample1 * alpha
@@ -280,7 +415,18 @@ class DeformableCausalConv1d(nn.Module):
         y = self._grouped_einsum_conv(sampled)
 
         offset_l1 = offsets.abs().mean()
+        if offsets.shape[-1] > 1:
+            offset_tv = (offsets[..., 1:] - offsets[..., :-1]).abs().mean()
+        else:
+            offset_tv = offsets.new_zeros(())
+        if self.max_offset_scale > 0.0:
+            max_offset = float(self.dilation) * float(self.max_offset_scale)
+            saturation_ratio = (offsets.abs() >= (0.95 * max_offset)).to(dtype=offsets.dtype).mean()
+        else:
+            saturation_ratio = offsets.new_zeros(())
         self._last_offset_l1 = offset_l1
+        self._last_offset_tv = offset_tv
+        self._last_offset_saturation_ratio = saturation_ratio
         if not return_aux:
             return y
 
@@ -289,6 +435,8 @@ class DeformableCausalConv1d(nn.Module):
             "offset_std": offsets.std(unbiased=False).detach(),
             "offset_max_abs": offsets.abs().amax().detach(),
             "offset_l1": offset_l1.detach(),
+            "offset_tv": offset_tv.detach(),
+            "offset_saturation_ratio": saturation_ratio.detach(),
         }
         return y, aux
 
@@ -600,6 +748,12 @@ class TemporalBlock(nn.Module):
         deformable_conv_mode: str = "conv1_only",
         deformable_causal_mode: str = "strict",
         deform_offset_kernel_size: int = 3,
+        deform_group_mode: str = "per_channel",
+        deform_channel_groups: Sequence[Sequence[int]] | None = None,
+        deform_max_offset_scale: float = 0.0,
+        deform_zero_init: bool = False,
+        use_deform_conv_gate: bool = False,
+        deform_conv_gate_bias_init: float = -2.0,
     ) -> None:
         super().__init__()
         self.use_multi_scale_conv = bool(use_multi_scale_conv)
@@ -608,6 +762,16 @@ class TemporalBlock(nn.Module):
         self.deformable_conv_mode = str(deformable_conv_mode).strip().lower()
         self.deformable_causal_mode = str(deformable_causal_mode).strip().lower()
         self.deform_offset_kernel_size = int(deform_offset_kernel_size)
+        self.deform_group_mode = str(deform_group_mode).strip().lower()
+        self.deform_channel_groups = (
+            tuple(tuple(int(idx) for idx in group) for group in deform_channel_groups)
+            if deform_channel_groups is not None
+            else None
+        )
+        self.deform_max_offset_scale = float(deform_max_offset_scale)
+        self.deform_zero_init = bool(deform_zero_init)
+        self.use_deform_conv_gate = bool(use_deform_conv_gate)
+        self.deform_conv_gate_bias_init = float(deform_conv_gate_bias_init)
         if self.use_hybrid_deform_multiscale and self.use_multi_scale_conv:
             raise ValueError(
                 "use_hybrid_deform_multiscale 与 use_multi_scale_conv 不能同时开启"
@@ -622,11 +786,15 @@ class TemporalBlock(nn.Module):
             raise ValueError("deformable_causal_mode 必须是 strict 或 relaxed")
         if self.deform_offset_kernel_size <= 1 or self.deform_offset_kernel_size % 2 == 0:
             raise ValueError("deform_offset_kernel_size 必须是大于1的奇数")
+        if self.use_deform_conv_gate and self.use_hybrid_deform_multiscale:
+            raise ValueError("use_deform_conv_gate 当前不支持 hybrid deform 模式")
 
         # 第一层卷积：Hybrid / 多尺度 / 标准(含可变形)
         self.hybrid_deform_conv: DeformableCausalConv1d | None = None
         self.hybrid_multi_scale_conv: AdaptiveMultiScaleCausalConv1d | None = None
         self.hybrid_gate: nn.Sequential | None = None
+        self.standard_conv1_for_gate: CausalConv1d | None = None
+        self.deform_conv_gate_logit: nn.Parameter | None = None
         if self.use_hybrid_deform_multiscale:
             hybrid_kernel_sizes = _to_kernel_tuple(hybrid_kernel_sizes, "hybrid_kernel_sizes")
             if hybrid_fft_temperature <= 0.0:
@@ -638,6 +806,10 @@ class TemporalBlock(nn.Module):
                 dilation=dilation,
                 causal_mode=self.deformable_causal_mode,
                 offset_kernel_size=self.deform_offset_kernel_size,
+                group_mode=self.deform_group_mode,
+                channel_groups=self.deform_channel_groups,
+                max_offset_scale=self.deform_max_offset_scale,
+                zero_init=self.deform_zero_init,
             )
             self.hybrid_multi_scale_conv = AdaptiveMultiScaleCausalConv1d(
                 in_channels=in_channels,
@@ -677,7 +849,21 @@ class TemporalBlock(nn.Module):
                     dilation=dilation,
                     causal_mode=self.deformable_causal_mode,
                     offset_kernel_size=self.deform_offset_kernel_size,
+                    group_mode=self.deform_group_mode,
+                    channel_groups=self.deform_channel_groups,
+                    max_offset_scale=self.deform_max_offset_scale,
+                    zero_init=self.deform_zero_init,
                 )
+                if self.use_deform_conv_gate:
+                    self.standard_conv1_for_gate = CausalConv1d(
+                        in_channels,
+                        out_channels,
+                        kernel_size=kernel_size,
+                        dilation=dilation,
+                    )
+                    self.deform_conv_gate_logit = nn.Parameter(
+                        torch.tensor(float(self.deform_conv_gate_bias_init))
+                    )
             else:
                 self.conv1 = CausalConv1d(
                     in_channels,
@@ -697,6 +883,10 @@ class TemporalBlock(nn.Module):
                 dilation=dilation,
                 causal_mode=self.deformable_causal_mode,
                 offset_kernel_size=self.deform_offset_kernel_size,
+                group_mode="per_channel",
+                channel_groups=None,
+                max_offset_scale=self.deform_max_offset_scale,
+                zero_init=self.deform_zero_init,
             )
         else:
             self.conv2 = CausalConv1d(
@@ -753,7 +943,18 @@ class TemporalBlock(nn.Module):
             if self.conv1 is None:
                 raise RuntimeError("conv1 未初始化")
             if isinstance(self.conv1, DeformableCausalConv1d):
-                if return_aux:
+                if self.standard_conv1_for_gate is not None and self.deform_conv_gate_logit is not None:
+                    if return_aux:
+                        conv1_out = self.conv1(x, return_aux=True)
+                        y_deform = conv1_out[0]
+                        deform_aux_stats.append(conv1_out[1])
+                    else:
+                        y_deform = self.conv1(x)
+                    y_standard = self.standard_conv1_for_gate(x)
+                    gate = torch.sigmoid(self.deform_conv_gate_logit).view(1, 1, 1)
+                    y = gate * y_deform + (1.0 - gate) * y_standard
+                    hybrid_gate_mean = gate.squeeze().detach()
+                elif return_aux:
                     conv1_out = self.conv1(x, return_aux=True)
                     y = conv1_out[0]
                     deform_aux_stats.append(conv1_out[1])
@@ -808,6 +1009,12 @@ class TemporalBlock(nn.Module):
             aux["deform_offset_l1"] = torch.stack(
                 [stats["offset_l1"] for stats in deform_aux_stats], dim=0
             ).sum(dim=0)
+            aux["deform_offset_tv"] = torch.stack(
+                [stats["offset_tv"] for stats in deform_aux_stats], dim=0
+            ).sum(dim=0)
+            aux["deform_offset_saturation_ratio"] = torch.stack(
+                [stats["offset_saturation_ratio"] for stats in deform_aux_stats], dim=0
+            ).mean(dim=0)
         if hybrid_gate_mean is not None:
             aux["hybrid_gate_mean"] = hybrid_gate_mean
         return out, aux
@@ -821,6 +1028,36 @@ class TemporalBlock(nn.Module):
         if isinstance(self.conv2, DeformableCausalConv1d):
             total = total + self.conv2.get_last_offset_l1()
         return total
+
+    def get_deform_offset_tv(self) -> torch.Tensor:
+        total = self.layer_norm.weight.new_zeros(())
+        if self.hybrid_deform_conv is not None:
+            total = total + self.hybrid_deform_conv.get_last_offset_tv()
+        if isinstance(self.conv1, DeformableCausalConv1d):
+            total = total + self.conv1.get_last_offset_tv()
+        if isinstance(self.conv2, DeformableCausalConv1d):
+            total = total + self.conv2.get_last_offset_tv()
+        return total
+
+    def get_deform_offset_saturation_ratio(self) -> torch.Tensor:
+        stats: list[torch.Tensor] = []
+        if self.hybrid_deform_conv is not None:
+            stats.append(self.hybrid_deform_conv.get_last_offset_saturation_ratio())
+        if isinstance(self.conv1, DeformableCausalConv1d):
+            stats.append(self.conv1.get_last_offset_saturation_ratio())
+        if isinstance(self.conv2, DeformableCausalConv1d):
+            stats.append(self.conv2.get_last_offset_saturation_ratio())
+        if len(stats) == 0:
+            return self.layer_norm.weight.new_zeros(())
+        return torch.stack(stats, dim=0).mean()
+
+    def iter_deform_offset_parameters(self):
+        if self.hybrid_deform_conv is not None:
+            yield from self.hybrid_deform_conv.iter_offset_parameters()
+        if isinstance(self.conv1, DeformableCausalConv1d):
+            yield from self.conv1.iter_offset_parameters()
+        if isinstance(self.conv2, DeformableCausalConv1d):
+            yield from self.conv2.iter_offset_parameters()
 
 
 # ===========================================================================

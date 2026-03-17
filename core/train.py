@@ -206,6 +206,49 @@ def build_sampler_for_train_dataset(
     )
 
 
+def collect_deform_offset_parameters(model: nn.Module) -> List[nn.Parameter]:
+    if hasattr(model, "get_deform_offset_parameters"):
+        params = list(getattr(model, "get_deform_offset_parameters")())
+    else:
+        params = [
+            param
+            for name, param in model.named_parameters()
+            if ".offset_conv." in name or ".group_offset_convs." in name
+        ]
+    deduped: List[nn.Parameter] = []
+    seen: set[int] = set()
+    for param in params:
+        if id(param) in seen:
+            continue
+        deduped.append(param)
+        seen.add(id(param))
+    return deduped
+
+
+def set_deform_offset_trainable(model: nn.Module, trainable: bool) -> None:
+    if hasattr(model, "set_deform_offset_trainable"):
+        getattr(model, "set_deform_offset_trainable")(bool(trainable))
+        return
+    for param in collect_deform_offset_parameters(model):
+        param.requires_grad = bool(trainable)
+
+
+def get_latest_deform_stats(model: nn.Module) -> Dict[str, float]:
+    if hasattr(model, "get_latest_deform_stats"):
+        raw = getattr(model, "get_latest_deform_stats")()
+        if isinstance(raw, dict):
+            return {
+                str(key): float(value)
+                for key, value in raw.items()
+                if isinstance(value, (int, float))
+            }
+    return {
+        "deform_offset_l1": 0.0,
+        "deform_offset_tv": 0.0,
+        "deform_offset_saturation_ratio": 0.0,
+    }
+
+
 def _load_optuna_runtime_context(
     run_dir: Path,
     device: torch.device,
@@ -519,11 +562,37 @@ def train_source_model(
     model_class = resolve_model_class(resolved_model_class_name)
     model = model_class(**model_init_kwargs).to(device)
     print(f"[{model_name}] model_class={resolved_model_class_name}")
-    # 鏂规 A+E锛欰damW锛堣В鑰?weight decay锛? CosineAnnealingWarmRestarts
+    deform_offset_params = collect_deform_offset_parameters(model)
+    deform_offset_param_ids = {id(param) for param in deform_offset_params}
+    main_params = [
+        param
+        for param in model.parameters()
+        if id(param) not in deform_offset_param_ids
+    ]
+    deform_offset_lr_scale = float(getattr(CFG, "deform_offset_lr_scale", 1.0))
+    deform_warmup_epochs = int(getattr(CFG, "deform_warmup_epochs", 0))
+    if len(deform_offset_params) > 0 and deform_warmup_epochs > 0:
+        set_deform_offset_trainable(model, trainable=False)
+    optimizer_groups = [
+        {"params": main_params, "lr": effective_lr, "name": "main"},
+    ]
+    if len(deform_offset_params) > 0:
+        optimizer_groups.append(
+            {
+                "params": deform_offset_params,
+                "lr": effective_lr * deform_offset_lr_scale,
+                "name": "deform_offset",
+            }
+        )
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=effective_lr,
+        optimizer_groups,
         weight_decay=float(getattr(CFG, 'weight_decay', 0.0)),
+    )
+    print(
+        f"[{model_name}] optimizer groups | main_lr={effective_lr:.6g} "
+        f"deform_offset_lr={effective_lr * deform_offset_lr_scale:.6g} "
+        f"deform_offset_params={len(deform_offset_params)} "
+        f"deform_warmup_epochs={deform_warmup_epochs}"
     )
     if device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -623,6 +692,9 @@ def train_source_model(
     for epoch in range(max_epochs):
         # 鏇存柊鏁版嵁闆嗙殑 epoch
         train_dataset.set_epoch(epoch)
+        if len(deform_offset_params) > 0 and deform_warmup_epochs > 0 and epoch == deform_warmup_epochs:
+            set_deform_offset_trainable(model, trainable=True)
+            print(f"[{model_name}] epoch={epoch+1} unfreeze deform offset parameters")
 
         model.train()
         train_loss_sum = 0.0
@@ -791,6 +863,7 @@ def train_source_model(
                 epochs_no_improve += 1
 
         elapsed = time.perf_counter() - t_start
+        deform_stats = get_latest_deform_stats(model)
         if val_macro_f1 is None:
             print(
                 f"[{model_name}] epoch={epoch+1} train_loss={train_loss:.5f} "
@@ -809,6 +882,10 @@ def train_source_model(
                 "val_macro_f1": val_macro_f1,
                 "val_computed": bool(should_validate),
                 "lr": optimizer.param_groups[0]["lr"],
+                "lr_deform_offset": (
+                    optimizer.param_groups[1]["lr"] if len(optimizer.param_groups) > 1 else None
+                ),
+                **deform_stats,
                 "elapsed_s": round(elapsed, 2),
             }
         )
@@ -819,6 +896,7 @@ def train_source_model(
                 "train_loss": train_loss,
                 "val_macro_f1": val_macro_f1,
                 "val_computed": bool(should_validate),
+                **deform_stats,
             }
         )
 

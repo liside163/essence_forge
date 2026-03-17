@@ -263,7 +263,7 @@
     }
   ],
   "cross_sensor_residuals": {
-    "enable": true,
+    "enable": false,
     "window_norm": true,
     "norm_eps": 1e-06,
     "mask_mode": "base_only",
@@ -395,6 +395,7 @@
     "use_channel_se": true,
     "channel_se_reduction": 16,
     "use_mixed_pooling": false,
+    "use_freq_branch": true,
     "freq_branch_channels": 96,
     "freq_branch_kernel_size": 3,
     "freq_branch_dropout": 0.24,
