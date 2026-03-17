@@ -52,6 +52,8 @@ def test_model_forward_without_frequency_branch() -> None:
     logits, aux = model.forward_with_aux(x, lengths)
 
     assert logits.shape == (2, 3)
+    assert aux["feature_branch_input_shape"] == (2, 6, 16)
+    assert aux["health_mask_bypass_enabled"] is False
     assert aux["freq_stream_shape"] is None
     assert aux["freq_pooled_shape"] is None
     assert aux["late_fusion_shape"] == (2, 8)

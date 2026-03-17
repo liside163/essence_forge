@@ -91,7 +91,7 @@ python Rflytool_main.py \
 - 对每个域内的数据按类别分层切分 `train / val / test`；
 - 使用阶段窗口(`stage window`)从长时序中截取固定长度样本；
 - 对源域训练集计算 z-score 统计量，并统一用于源域训练和目标域微调；
-- 在基础传感器输入之外，额外构造健康掩码和跨传感器残差特征。
+- 在基础传感器输入之外，默认配置开启健康掩码增强，用于显式提供通道健康状态提示。
 
 文件名解析规则在本仓库代码中是固定的：
 
@@ -150,26 +150,24 @@ python Rflytool_main.py \
 29. `baro_temp` -> `_vehicle_air_data_0_baro_temp_celcius`
 30. `baro_pressure` -> `_vehicle_air_data_0_baro_pressure_pa`
 
-在此基础上，代码还会追加 `9` 个跨传感器残差通道，用于显式建模：
-
-- `d(vel)/dt` 与 `accel` 的一致性
-- `d(pos)/dt` 与 `vel` 的一致性
-- `d²(pos)/dt²` 与 `accel` 的一致性
+默认实验以这 `30` 个基础通道为主，并拼接与之对应的健康掩码通道。健康掩码用于在故障注入后显式标记受影响通道的健康状态，作为默认模型输入中的辅助健康先验。
 
 ### 2. 模型结构
 
 默认模型导出类是 `EssenceForgeTCN`，主体实现位于 `core/models/simplified_fft_lwpt_se_tcn.py`。结构可以概括为：
 
-- 时域分支：`LWPT frontend + TCN`
-- 频域分支：`FFT magnitude + Conv1d`
+- 时域主分支：`LWPT frontend + TCN`
+- 频域辅助分支：`FFT magnitude + Conv1d`
+- 默认对齐机制：在第 `0` 层对原始传感器分支应用有界分组可形变卷积，健康掩码旁路参与后续融合但不参与 offset 学习
+- 分组策略：offset 按 `accel / gyro / mag / pos / vel / quat / actuator_rpm / baro` 共享，最大偏移尺度为 `1.5`
 - 注意力机制：时域与频域分支分别使用 SE 通道注意力
-- 融合方式：两支路池化后做 late fusion，再送入分类头
+- 融合方式：时域分支、频域分支和健康掩码旁路在 late fusion 阶段汇合，再送入分类头
 
 这套结构的目的，是同时保留：
 
 - 时域动态模式；
 - 频域能量分布；
-- 多传感器之间的健康状态与残差信息。
+- 多传感器健康状态提示与更稳定的跨工况时序对齐能力。
 
 ### 3. 训练与迁移策略
 
@@ -212,7 +210,7 @@ python Rflytool_main.py \
 - `run.py`：统一命令行入口，支持 `split/preprocess/train/finetune/eval/pipeline`
 - `config.py`：实验配置加载与运行时快照写出
 - `split.py`：数据索引与数据集划分封装
-- `preprocess.py`：统计量、窗口、掩码、残差特征和预计算样本准备
+- `preprocess.py`：统计量、窗口、掩码和预计算样本准备
 - `model.py`：对外导出的 `EssenceForgeTCN`
 - `features.py`：FFT 幅值构造与分支池化辅助函数
 - `core/`：训练、微调、评估、数据集、损失函数和模型组件

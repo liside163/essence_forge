@@ -408,7 +408,29 @@
     "deformable_conv_mode": "conv1_only",
     "deformable_causal_mode": "strict",
     "deform_offset_kernel_size": 3,
-    "deform_offset_l1_weight": 0.0001,
+    "deform_offset_l1_weight": 0.0005,
+    "deform_apply_levels": [
+      0
+    ],
+    "deform_scope": "raw_only",
+    "deform_group_mode": "shared_by_group",
+    "deform_groups": [
+      "accel",
+      "gyro",
+      "mag",
+      "pos",
+      "vel",
+      "quat",
+      "actuator_rpm",
+      "baro"
+    ],
+    "deform_max_offset_scale": 1.5,
+    "deform_zero_init": true,
+    "deform_warmup_epochs": 5,
+    "deform_offset_lr_scale": 0.1,
+    "deform_offset_tv_weight": 0.001,
+    "deform_bypass_health_mask": true,
+    "use_deform_conv_gate": false,
     "use_hybrid_deform_multiscale_tcn": false,
     "hybrid_tcn_kernel_sizes": [
       3,

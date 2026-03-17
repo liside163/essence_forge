@@ -377,14 +377,20 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             self.deform_apply_levels = tuple(sorted(set(int(level) for level in self.deform_apply_levels)))
         if any(level < 0 or level >= self.tcn_num_levels for level in self.deform_apply_levels):
             raise ValueError("deform_apply_levels 含越界层索引")
-        if self.deform_group_mode == "shared_by_group" and len(self.deform_groups) == 0:
+        if self.use_deformable_tcn and self.deform_group_mode == "shared_by_group" and len(self.deform_groups) == 0:
             raise ValueError("shared_by_group 模式下 deform_groups 不能为空")
 
+        self.effective_deform_scope = (
+            self.deform_scope if self.use_deformable_tcn else "all_inputs"
+        )
+        self.effective_deform_group_mode = (
+            self.deform_group_mode if self.use_deformable_tcn else "per_channel"
+        )
         self.health_mask_branch_enabled = bool(
-            self.deform_bypass_health_mask and self.health_mask_input_dim > 0
+            self.use_deformable_tcn and self.deform_bypass_health_mask and self.health_mask_input_dim > 0
         )
         self.health_mask_start = self.raw_sensor_input_dim
-        if self.deform_scope == "raw_only":
+        if self.effective_deform_scope == "raw_only":
             self.feature_branch_input_dim = self.base_raw_input_dim
             self.feature_branch_channel_names = self.base_raw_channel_names
         elif self.health_mask_branch_enabled:
@@ -398,10 +404,14 @@ class SimplifiedFftLwptSeTCN(nn.Module):
                 if self.input_dim > self.raw_sensor_input_dim
                 else self.raw_sensor_channel_names
             )
+        if len(self.feature_branch_channel_names) != self.feature_branch_input_dim:
+            self.feature_branch_channel_names = tuple(
+                f"input_{idx}" for idx in range(self.feature_branch_input_dim)
+            )
         if (
             not self.health_mask_branch_enabled
             and self.input_dim > self.feature_branch_input_dim
-            and self.deform_scope == "raw_only"
+            and self.effective_deform_scope == "raw_only"
         ):
             # raw_only 语义要求额外辅助通道旁路，而不是继续进入主特征分支。
             raise ValueError(
@@ -409,7 +419,7 @@ class SimplifiedFftLwptSeTCN(nn.Module):
             )
 
         self.deform_channel_groups: tuple[tuple[int, ...], ...] | None = None
-        if self.deform_group_mode == "shared_by_group":
+        if self.effective_deform_group_mode == "shared_by_group":
             self.deform_channel_groups = build_named_raw_groups(
                 self.feature_branch_channel_names,
                 self.deform_groups,
@@ -470,7 +480,7 @@ class SimplifiedFftLwptSeTCN(nn.Module):
                     deformable_conv_mode=self.deformable_conv_mode,
                     deformable_causal_mode=self.deformable_causal_mode,
                     deform_offset_kernel_size=self.deform_offset_kernel_size,
-                    deform_group_mode=self.deform_group_mode,
+                    deform_group_mode=self.effective_deform_group_mode,
                     deform_channel_groups=(self.deform_channel_groups if level == 0 else None),
                     deform_max_offset_scale=self.deform_max_offset_scale,
                     deform_zero_init=self.deform_zero_init,
